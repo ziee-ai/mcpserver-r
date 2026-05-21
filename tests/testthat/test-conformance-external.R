@@ -19,29 +19,38 @@ skip_if(!file.exists(conformance_bin),
         paste("@modelcontextprotocol/conformance not installed under",
               parity_dir, "- run `npm install` there"))
 
-test_that("official @modelcontextprotocol/conformance suite passes for 2025-06-18", {
+run_conformance <- function(spec_version) {
   runner <- system.file("conformance", "run.R", package = "mcpserver")
   skip_if(!file.exists(runner), "conformance fixture not installed")
-
   child_env <- Sys.getenv()
   child_env["R_LIBS"] <- paste(.libPaths(),
                                collapse = .Platform$path.sep)
-  port <- 42600L + sample.int(200L, 1L)
+  port <- 42600L + sample.int(400L, 1L)
   srv <- processx::process$new(
     "Rscript", c(runner, "--port", as.character(port)),
     stdout = "|", stderr = "|", env = child_env)
-  withr::defer(srv$kill())
+  withr::defer(srv$kill(), envir = parent.frame())
   Sys.sleep(3)
-
-  proc <- processx::run(
+  processx::run(
     conformance_bin,
     c("server", "--url",
       sprintf("http://127.0.0.1:%d/mcp", port),
-      "--spec-version", "2025-06-18"),
+      "--spec-version", spec_version),
     error_on_status = FALSE,
-    timeout = 180)
-  # Conformance CLI exits 0 when every scenario passes. Surface a
-  # snippet of stderr in the failure message for diagnostics.
+    timeout = 240)
+}
+
+test_that("official @modelcontextprotocol/conformance suite passes for 2025-06-18", {
+  proc <- run_conformance("2025-06-18")
+  expect_equal(proc$status, 0L,
+    info = paste("conformance failed; stderr:",
+                 substr(proc$stderr, 1L, 600L),
+                 "stdout:",
+                 substr(proc$stdout, 1L, 600L)))
+})
+
+test_that("official @modelcontextprotocol/conformance suite passes for 2025-11-25", {
+  proc <- run_conformance("2025-11-25")
   expect_equal(proc$status, 0L,
     info = paste("conformance failed; stderr:",
                  substr(proc$stderr, 1L, 600L),
