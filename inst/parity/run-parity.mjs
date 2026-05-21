@@ -137,10 +137,20 @@ async function main() {
     return result;
   });
   client.setRequestHandler(ElicitRequestSchema, async (req) => {
-    const result = {
-      action: "accept",
-      content: { answer: "mock-answer", confidence: 0.9 },
-    };
+    // The everything-server's `trigger-elicitation-request` sends a
+    // 13-field schema; the simpler/async variants send 2-field
+    // schemas. Inspect `requestedSchema.properties` to decide what to
+    // return. The R server applies schema-declared defaults so we
+    // only need to supply `name` (the sole required field) for the
+    // 13-field variant.
+    const props = req.params?.requestedSchema?.properties ?? {};
+    const content =
+      "name" in props
+        ? { name: "Mock User" }
+        : "interpretation" in props
+        ? { interpretation: "programming" }
+        : { answer: "mock-answer", confidence: 0.9 };
+    const result = { action: "accept", content };
     if (req.params?.task) {
       return { task: startTask(result) };
     }
@@ -203,13 +213,14 @@ async function main() {
     "get-resource-reference": { resourceType: "Text", resourceId: "42" },
     "get-resource-links": { count: 3 },
     "gzip-file-as-resource": {
-      content: "hello world",
+      data: "data:text/plain;base64,aGVsbG8gd29ybGQ=",
       name: "hi.gz",
-      outputType: "resource",
+      outputType: "resource_link",
     },
     "toggle-simulated-logging": { enable: true },
     "toggle-subscriber-updates": { enable: true },
-    "simulate-research-query": { topic: "vaccines", steps: 2 },
+    "simulate-research-query": { topic: "python", steps: 2,
+                                 ambiguous: true },
     "trigger-sampling-request": {
       prompt: "What is 2+2?",
       maxTokens: 10,

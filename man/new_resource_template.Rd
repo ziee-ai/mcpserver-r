@@ -11,7 +11,8 @@ new_resource_template(
   mime_type = NULL,
   annotations = NULL,
   handler,
-  complete = NULL
+  complete = NULL,
+  title = NULL
 )
 }
 \arguments{
@@ -29,6 +30,9 @@ new_resource_template(
 
 \item{complete}{Optional named list of completion functions keyed by
 variable name.}
+
+\item{title}{Optional human-readable display name, distinct from
+the programmatic \code{name}.}
 }
 \value{
 A resource template descriptor (tagged list).

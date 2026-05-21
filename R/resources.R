@@ -154,7 +154,17 @@ handle_resources_read <- function(server, session, params, msg) {
   if (is.null(uri)) {
     return(jrpc_error(msg$id, jrpc_codes$invalid_params, "missing uri"))
   }
-  # Exact match first.
+  # Session-scoped resources take precedence (e.g. per-call gzip
+  # archives surfaced by tools).
+  sr <- session_resource_get(session, uri)
+  if (!is.null(sr)) {
+    return(list(.resource_call = TRUE,
+                resource = sr,
+                params = list(uri = uri),
+                mime_type = sr$mime_type,
+                ctx = make_ctx(session, msg)))
+  }
+  # Exact match against the server-wide registry.
   if (exists(uri, envir = server$resources, inherits = FALSE)) {
     r <- get(uri, envir = server$resources, inherits = FALSE)
     return(list(.resource_call = TRUE,

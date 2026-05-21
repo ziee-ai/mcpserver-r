@@ -49,9 +49,106 @@
   jsonlite::toJSON(value, auto_unbox = TRUE, pretty = TRUE, force = TRUE)
 }
 
+# Fetch the payload `gzip-file-as-resource` will compress. Accepts:
+#   - http(s)://URL  — fetched with httr2, env-var gated size + time +
+#                       allowed-domains. Fails closed on disallowed
+#                       schemes (ftp, file, javascript, ...).
+#   - data:<mime>;base64,<payload> — decoded in-process.
+#   - any other string — treated as inline content.
+gzip_fetch_payload <- function(data) {
+  if (is.null(data) || identical(data, "")) {
+    stop("'data' is required")
+  }
+  if (grepl("^data:", data, perl = TRUE)) {
+    m <- regmatches(data, regexec(
+      "^data:([^;,]*)(?:;([^,]*))?,(.*)$", data))[[1L]]
+    if (length(m) < 4L) stop("malformed data: URI")
+    payload <- m[[4L]]
+    if (identical(m[[3L]], "base64")) {
+      return(list(bytes = jsonlite::base64_dec(payload)))
+    }
+    return(list(bytes = charToRaw(utils::URLdecode(payload))))
+  }
+  if (grepl("^https?://", data, ignore.case = TRUE)) {
+    max_size <- as.integer(Sys.getenv(
+      "MCPSERVER_GZIP_MAX_FETCH_SIZE", "10485760"))
+    max_time_ms <- as.integer(Sys.getenv(
+      "MCPSERVER_GZIP_MAX_FETCH_TIME_MILLIS", "30000"))
+    allowed <- strsplit(Sys.getenv("MCPSERVER_GZIP_ALLOWED_DOMAINS",
+                                   ""), ",", fixed = TRUE)[[1L]]
+    allowed <- allowed[nzchar(allowed)]
+    if (length(allowed) > 0L) {
+      host <- sub("^https?://", "", data, ignore.case = TRUE)
+      host <- sub("[/:?#].*$", "", host)
+      if (!any(vapply(allowed,
+                      function(a) identical(tolower(host),
+                                            tolower(a)),
+                      logical(1L)))) {
+        stop(sprintf(
+          "host '%s' not in MCPSERVER_GZIP_ALLOWED_DOMAINS", host))
+      }
+    }
+    resp <- httr2::request(data) |>
+      httr2::req_timeout(max(1, max_time_ms / 1000)) |>
+      httr2::req_error(is_error = function(r) FALSE) |>
+      httr2::req_perform()
+    if (httr2::resp_status(resp) >= 400L) {
+      stop(sprintf("HTTP %d from %s",
+                   httr2::resp_status(resp), data))
+    }
+    raw <- httr2::resp_body_raw(resp)
+    if (length(raw) > max_size) {
+      stop(sprintf("response exceeded MCPSERVER_GZIP_MAX_FETCH_SIZE = %d",
+                   max_size))
+    }
+    return(list(bytes = raw))
+  }
+  if (grepl("^[a-z][a-z0-9+.-]*://", data, ignore.case = TRUE)) {
+    stop(sprintf("unsupported URL scheme in '%s'", data))
+  }
+  # Plain inline content (backwards compatible with the pre-Phase-D
+  # signature that took a `content` string).
+  list(bytes = charToRaw(data))
+}
+
+# Topic-aware disambiguation options for simulate-research-query. Mirrors
+# the TS everything-server's `getInterpretationsForTopic`.
+topic_interpretations <- function(topic) {
+  t <- tolower(as.character(topic %||% ""))
+  if (identical(t, "python")) {
+    return(list(
+      list(const = "programming",
+           title = "Python programming language"),
+      list(const = "snake",
+           title = "Python (the snake)"),
+      list(const = "comedy",
+           title = "Monty Python")))
+  }
+  if (identical(t, "java")) {
+    return(list(
+      list(const = "programming",
+           title = "Java programming language"),
+      list(const = "island", title = "Java (the island)"),
+      list(const = "coffee", title = "Java (coffee)")))
+  }
+  list(
+    list(const = "technical",
+         title = sprintf("Technical aspects of %s", topic)),
+    list(const = "historical",
+         title = sprintf("Historical context of %s", topic)),
+    list(const = "current",
+         title = sprintf("Current developments in %s", topic)))
+}
+
 build_everything_server <- function() {
   docs_dir <- system.file("everything", "docs", package = "mcpserver")
   if (!nzchar(docs_dir)) docs_dir <- file.path("inst", "everything", "docs")
+  tiny_image_src <- system.file("everything", "tiny-image.R",
+                                package = "mcpserver")
+  if (!nzchar(tiny_image_src)) {
+    tiny_image_src <- file.path("inst", "everything", "tiny-image.R")
+  }
+  if (file.exists(tiny_image_src)) source(tiny_image_src, local = TRUE)
 
   instructions <- tryCatch(
     paste(readLines(file.path(docs_dir, "instructions.md"),
@@ -202,19 +299,9 @@ build_everything_server <- function() {
     annotations = list(title = "Get Tiny Image",
                        readOnlyHint = TRUE, openWorldHint = FALSE),
     handler = function(args, ctx) {
-      tiny <- as.raw(c(
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-        0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-        0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
-        0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-        0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
-        0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
-        0x42, 0x60, 0x82))
       list(content = list(
         mcpserver::response_text("This is a tiny image:"),
-        mcpserver::response_image(tiny, "image/png"),
+        mcpserver::response_image(MCP_TINY_IMAGE, "image/png"),
         mcpserver::response_text("The image above is the MCP tiny image marker.")
       ))
     }
@@ -249,17 +336,8 @@ build_everything_server <- function() {
           annotations = list(audience = I("assistant"), priority = 0.3)))
       blocks <- list(text_block)
       if (isTRUE(args$includeImage)) {
-        tiny <- as.raw(c(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
-                         0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
-                         0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-                         0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
-                         0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41,
-                         0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-                         0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
-                         0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
-                         0x42, 0x60, 0x82))
         blocks <- c(blocks, list(mcpserver::response_image(
-          tiny, "image/png",
+          MCP_TINY_IMAGE, "image/png",
           annotations = list(audience = I("user"), priority = 0.5))))
       }
       list(content = blocks)
@@ -344,31 +422,55 @@ build_everything_server <- function() {
 
   mcpserver::add_capability(srv, mcpserver::new_tool(
     name = "gzip-file-as-resource",
-    description = "Gzips the provided content and returns it as an embedded resource.",
+    description = paste("Gzips the provided data and exposes it as a",
+                        "session-scoped resource. Accepts inline content,",
+                        "a `data:` URI, or an `http(s)://` URL."),
     input_schema = mcpserver::schema(list(
-      content = mcpserver::property_string(
-        "Content to gzip", required = TRUE),
+      data = mcpserver::property_string(
+        "Content to gzip, a data: URI, or an http(s):// URL.",
+        required = TRUE),
       name = mcpserver::property_string(
         "Resource name", default = "archive.gz"),
       outputType = mcpserver::property_enum(
         c("resource", "resource_link"),
         description = "Return the bytes inline or just a link",
-        default = "resource")
+        default = "resource_link")
     )),
     annotations = list(title = "Gzip File as Resource",
-                       readOnlyHint = FALSE, openWorldHint = FALSE),
+                       readOnlyHint = FALSE, openWorldHint = TRUE),
+    bidirectional = TRUE,
     handler = function(args, ctx) {
+      payload <- tryCatch(
+        gzip_fetch_payload(args$data),
+        error = function(e) list(.err = conditionMessage(e)))
+      if (!is.null(payload$.err)) {
+        return(mcpserver::response_error(
+          paste("gzip-file-as-resource fetch failed:", payload$.err)))
+      }
       tmp <- tempfile(fileext = ".gz")
       on.exit(unlink(tmp), add = TRUE)
       con <- gzfile(tmp, open = "wb")
-      writeBin(charToRaw(args$content), con)
+      writeBin(payload$bytes, con)
       close(con)
       bytes <- readBin(tmp, what = "raw", n = file.info(tmp)$size)
+      name <- args$name %||% "archive.gz"
       uri <- sprintf("demo://resource/session/%s",
-                     args$name %||% "archive.gz")
+                     utils::URLencode(name, reserved = TRUE))
+      # Register the gzipped bytes as a session-scoped resource so
+      # the resource_link returned below resolves on subsequent
+      # resources/read calls within this session.
+      mcpserver:::session_resource_register(
+        ctx$.session,
+        uri = uri,
+        mime_type = "application/gzip",
+        name = name,
+        description = sprintf("Gzipped archive: %s", name),
+        handler = function(params, ctx_inner) {
+          list(blob = bytes, mimeType = "application/gzip")
+        })
       if (identical(args$outputType, "resource_link")) {
         mcpserver::response_resource_link(
-          uri, name = args$name %||% "archive.gz",
+          uri, name = name,
           mime_type = "application/gzip")
       } else {
         mcpserver::response_resource(
@@ -462,13 +564,22 @@ build_everything_server <- function() {
       topic = mcpserver::property_string("Topic", required = TRUE),
       steps = mcpserver::property_integer("Number of stages",
                                           default = 3L,
-                                          minimum = 1L, maximum = 10L)
+                                          minimum = 1L, maximum = 10L),
+      ambiguous = mcpserver::property_boolean(
+        "When TRUE, mid-task elicit topic interpretation",
+        default = FALSE)
     )),
     annotations = list(title = "Simulate Research Query",
                        readOnlyHint = TRUE, openWorldHint = FALSE),
     tasks = TRUE,
+    # Bidirectional so the handler runs on the transport thread:
+    # task store mutations propagate live (daemons can't update the
+    # parent's store) and ctx$request_elicitation can drive the
+    # pending-request table.
+    bidirectional = TRUE,
     handler = function(args, ctx) {
       stages <- as.integer(args$steps %||% 3L)
+      interpretation <- NULL
       ctx$task$append_message(list(
         type = "text",
         text = sprintf("research started on '%s' (%d stages)",
@@ -478,8 +589,47 @@ build_everything_server <- function() {
         if (isTRUE(ctx$task$cancelled())) {
           return(mcpserver::response_error("research cancelled"))
         }
-        line <- sprintf("stage %d/%d: surveyed '%s'",
-                        i, stages, args$topic)
+        # SEP-1686 input_required path: half-way through, if the
+        # client opted in to elicitation, flip the task to
+        # input_required and ask the client to disambiguate the
+        # topic. Per TS reference, only fires when args$ambiguous.
+        if (i == max(1L, ceiling(stages / 2L)) &&
+            isTRUE(args$ambiguous) && is.null(interpretation) &&
+            !is.null(ctx$client_capabilities$elicitation)) {
+          ctx$task$update_status("input_required")
+          options <- topic_interpretations(args$topic)
+          choice <- tryCatch(ctx$request_elicitation(
+            message = sprintf(
+              "Topic '%s' is ambiguous. Pick an interpretation:",
+              args$topic),
+            requested_schema = list(
+              type = "object",
+              properties = list(
+                interpretation = list(
+                  type = "string",
+                  oneOf = options)),
+              required = list("interpretation")),
+            timeout = 30),
+            error = function(e) NULL)
+          ctx$task$update_status("running")
+          if (!is.null(choice) &&
+              identical(choice$action %||% "accept", "accept")) {
+            interpretation <- choice$content$interpretation %||% NULL
+            ctx$task$append_message(list(
+              type = "text",
+              text = sprintf("user picked interpretation: %s",
+                             interpretation)))
+          } else {
+            ctx$task$append_message(list(
+              type = "text",
+              text = "elicitation declined/unavailable; using default"))
+          }
+        }
+        line <- sprintf("stage %d/%d: surveyed '%s'%s",
+                        i, stages, args$topic,
+                        if (!is.null(interpretation)) {
+                          sprintf(" (%s)", interpretation)
+                        } else "")
         ctx$task$append_message(list(type = "text", text = line))
         if (!is.null(ctx$progress_token)) {
           ctx$send_progress(i, total = stages,
@@ -488,7 +638,6 @@ build_everything_server <- function() {
         report_lines <- c(report_lines, line)
         Sys.sleep(0.05)
       }
-      ctx$task$update_status("completed")
       report <- paste(c(
         sprintf("# Research report: %s", args$topic),
         "",
@@ -559,6 +708,10 @@ build_everything_server <- function() {
     }
 
     if (!is.null(caps$elicitation)) {
+      # Kitchen-sink schema matching the TS everything-server's
+      # trigger-elicitation-request: every primitive, every enum
+      # variant, format validators. Only `name` is required; the
+      # rest carry defaults or are optional.
       mcpserver::add_capability(mcp, mcpserver::new_tool(
         name = "trigger-elicitation-request",
         description = "Asks the client to elicit structured input from the user.",
@@ -570,14 +723,66 @@ build_everything_server <- function() {
                            readOnlyHint = TRUE, openWorldHint = TRUE),
         bidirectional = TRUE,
         handler = function(args, ctx) {
+          requested <- list(
+            type = "object",
+            properties = list(
+              name = list(type = "string",
+                          description = "Your name"),
+              check = list(type = "boolean",
+                           description = "I agree to the terms"),
+              firstLine = list(type = "string",
+                               description = "Optional opening line",
+                               default = "Hello, world!"),
+              email = list(type = "string", format = "email",
+                           description = "Contact email"),
+              homepage = list(type = "string", format = "uri",
+                              description = "Personal homepage"),
+              birthdate = list(type = "string", format = "date",
+                               description = "Date of birth"),
+              integer = list(type = "integer",
+                             description = "Lucky integer",
+                             minimum = 1L, maximum = 100L,
+                             default = 42L),
+              number = list(type = "number",
+                            description = "Favourite number",
+                            minimum = 0, maximum = 1000,
+                            default = 3.14),
+              untitledSingleSelectEnum = list(
+                type = "string",
+                description = "Pick a Friend",
+                enum = I(c("Rachel", "Monica", "Phoebe",
+                           "Joey", "Chandler", "Ross"))),
+              untitledMultipleSelectEnum = list(
+                type = "array",
+                description = "Pick up to 3 instruments",
+                items = list(type = "string",
+                             enum = I(c("Guitar", "Piano", "Violin",
+                                        "Drums", "Bass")))),
+              titledSingleSelectEnum = list(
+                type = "string",
+                description = "Pick a level",
+                oneOf = list(
+                  list(const = "beginner", title = "Beginner"),
+                  list(const = "intermediate", title = "Intermediate"),
+                  list(const = "advanced", title = "Advanced"))),
+              titledMultipleSelectEnum = list(
+                type = "array",
+                description = "Pick interests",
+                items = list(anyOf = list(
+                  list(const = "ai", title = "Artificial Intelligence"),
+                  list(const = "ml", title = "Machine Learning"),
+                  list(const = "stats", title = "Statistics")))),
+              legacyTitledEnum = list(
+                type = "string",
+                description = "Pick using legacy titles",
+                enum = I(c("red", "green", "blue")),
+                enumNames = I(c("Red", "Green", "Blue")))
+            ),
+            required = list("name")
+          )
           res <- tryCatch(ctx$request_elicitation(
             message = args$message,
-            requested_schema = mcpserver::schema(list(
-              answer = mcpserver::property_string(
-                "Free-text answer", required = TRUE),
-              confidence = mcpserver::property_number(
-                "Confidence 0..1", minimum = 0, maximum = 1)
-            )),
+            requested_schema = requested,
             timeout = 30),
             error = function(e) conditionMessage(e))
           if (is.character(res)) {
@@ -591,8 +796,20 @@ build_everything_server <- function() {
           if (identical(action, "cancel")) {
             return(mcpserver::response_text("User cancelled."))
           }
-          ans <- res$content$answer %||% res$answer %||% ""
-          mcpserver::response_text(sprintf("You said: %s", ans))
+          # Pretty-print whatever the user supplied (defaults are
+          # applied by validate_elicit_response on the server side).
+          content <- res$content %||% list()
+          lines <- vapply(names(content), function(k) {
+            v <- content[[k]]
+            if (is.list(v) || length(v) > 1L) {
+              v <- paste(unlist(v), collapse = ", ")
+            }
+            sprintf(" - %s: %s", k, as.character(v))
+          }, character(1L))
+          mcpserver::response_text(paste(c(
+            sprintf("Elicitation accepted. Collected %d fields:",
+                    length(lines)),
+            lines), collapse = "\n"))
         }
       ))
     }

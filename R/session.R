@@ -36,6 +36,11 @@ Session <- R6::R6Class(
     # Cancellation tokens: env keyed by *client* request id.
     cancel = NULL,
 
+    # Per-session resource registry (TS SDK's "session-scoped resources").
+    # Tools may register a resource on a given session at call time; the
+    # entry is torn down when the session is closed.
+    session_resources = NULL,
+
     initialize = function(session_id, server, write_fn,
                           max_event_log = 1000L) {
       self$session_id <- session_id
@@ -47,6 +52,7 @@ Session <- R6::R6Class(
       self$subs <- new.env(parent = emptyenv())
       self$pending <- new.env(parent = emptyenv())
       self$cancel <- new.env(parent = emptyenv())
+      self$session_resources <- new.env(parent = emptyenv())
     },
 
     # Allocate a fresh negative id for an outgoing server->client request.
@@ -157,6 +163,11 @@ Session <- R6::R6Class(
           safely(nanonext::cv_signal(entry$cv), log = FALSE)
         }
         rm(list = k, envir = self$pending)
+      }
+      if (!is.null(self$session_resources)) {
+        for (k in ls(self$session_resources, all.names = TRUE)) {
+          rm(list = k, envir = self$session_resources)
+        }
       }
       cancel_sweep_session(self)
     }

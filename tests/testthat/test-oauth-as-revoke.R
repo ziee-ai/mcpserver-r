@@ -62,8 +62,11 @@ test_that("/revoke followed by refresh_token grant rejects the revoked token", {
   cfg <- setup_cfg()
   refresh <- mint_refresh_token(cfg)
   call_revoke(cfg, list(token = refresh, client_id = "c-1"))
-  body <- sprintf("grant_type=refresh_token&refresh_token=%s",
-                  utils::URLencode(refresh, reserved = TRUE))
+  body <- paste(c("grant_type=refresh_token",
+                  "client_id=c-1",
+                  sprintf("refresh_token=%s",
+                          utils::URLencode(refresh, reserved = TRUE))),
+                collapse = "&")
   req <- list(body = charToRaw(body), headers = character())
   resp <- mcpserver:::oauth_as_token_handler(cfg)(req)
   expect_equal(resp$status, 400L)

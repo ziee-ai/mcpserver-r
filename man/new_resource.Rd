@@ -10,7 +10,8 @@ new_resource(
   uri,
   mime_type = NULL,
   annotations = NULL,
-  handler
+  handler,
+  title = NULL
 )
 }
 \arguments{
@@ -25,6 +26,9 @@ new_resource(
 \item{annotations}{Optional MCP annotations list.}
 
 \item{handler}{A function \verb{function(params, ctx)}.}
+
+\item{title}{Optional human-readable display name, distinct from
+the programmatic \code{name}.}
 }
 \value{
 A resource descriptor (tagged list).

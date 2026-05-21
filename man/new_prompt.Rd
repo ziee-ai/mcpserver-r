@@ -4,7 +4,14 @@
 \alias{new_prompt}
 \title{Define an MCP prompt}
 \usage{
-new_prompt(name, description, arguments = list(), complete = NULL, handler)
+new_prompt(
+  name,
+  description,
+  arguments = list(),
+  complete = NULL,
+  handler,
+  title = NULL
+)
 }
 \arguments{
 \item{name}{Prompt identifier.}
@@ -16,6 +23,9 @@ new_prompt(name, description, arguments = list(), complete = NULL, handler)
 \item{complete}{Optional named list of completion functions.}
 
 \item{handler}{A function \verb{function(args, ctx)}.}
+
+\item{title}{Optional human-readable display name, distinct from
+the programmatic \code{name}.}
 }
 \value{
 A prompt descriptor (tagged list).

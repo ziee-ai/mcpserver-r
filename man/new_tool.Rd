@@ -12,7 +12,9 @@ new_tool(
   annotations = NULL,
   handler,
   tasks = FALSE,
-  bidirectional = FALSE
+  bidirectional = FALSE,
+  title = NULL,
+  meta = NULL
 )
 }
 \arguments{
@@ -30,7 +32,9 @@ new_tool(
 \item{handler}{A function \verb{function(args, ctx)}.}
 
 \item{tasks}{Whether the tool participates in the experimental
-tasks lifecycle (default \code{FALSE}).}
+tasks lifecycle (default \code{FALSE}). When \code{TRUE}, the tool's
+\code{tools/list} descriptor emits \code{execution.taskSupport = "required"}
+so spec-strict clients can discover task support before calling.}
 
 \item{bidirectional}{Set \code{TRUE} for tools that issue server-to-client
 requests (\code{ctx$request_sampling()}, \code{ctx$request_elicitation()},
@@ -39,6 +43,15 @@ thread instead of inside a \code{mirai} daemon so they can access the
 live pending-request table. The transport stays responsive because
 the handler yields via \code{later::run_now()} while waiting on the
 client.}
+
+\item{title}{Optional human-readable display name. Distinct from
+\code{name} (which is the programmatic identifier) and from
+\code{annotations$title} (legacy shape kept for back-compat with
+pre-2025-06-18 clients). Modern clients prefer this top-level
+field per spec.}
+
+\item{meta}{Optional named list emitted as \verb{_meta} on the
+\code{tools/list} descriptor. Arbitrary metadata for client-side use.}
 }
 \value{
 A tool descriptor (tagged list) for use with \code{\link[=add_capability]{add_capability()}}.
