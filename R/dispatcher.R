@@ -208,7 +208,16 @@ finalize_async <- function(marker, server, session) {
                    val$message %||% "tool failed",
                    data = val$data)
       } else {
-        jrpc_response(marker$.id, finalize_tool_result(tool, val))
+        result <- finalize_tool_result(tool, val)
+        # Task-mode tools: record the final result and flip status
+        # to terminal so a later tasks/result poll can deliver it.
+        if (isTRUE(tool$tasks) && !is.null(ctx$.task)) {
+          store <- ensure_task_store(server)
+          task_set_result(store, ctx$.task$id, result)
+          term <- if (isTRUE(result$isError)) "failed" else "completed"
+          task_update_status(store, ctx$.task$id, term)
+        }
+        jrpc_response(marker$.id, result)
       }
       # Always release the cancellation entry (success and error
       # paths both leak otherwise).
@@ -232,15 +241,32 @@ finalize_async <- function(marker, server, session) {
       onFulfilled = function(v) {
         cancel_entry_close(session, marker$.id)
         if (is.list(v) && isTRUE(v$.mcp_err)) {
+          # Surface failure to the task store too so a later
+          # tasks/result poll resolves with status = "failed".
+          if (isTRUE(tool$tasks) && !is.null(ctx$.task)) {
+            store <- ensure_task_store(server)
+            task_update_status(store, ctx$.task$id, "failed")
+          }
           return(jrpc_error(marker$.id,
                             v$code %||% jrpc_codes$internal_error,
                             v$message %||% "tool failed",
                             data = v$data))
         }
-        jrpc_response(marker$.id, finalize_tool_result(tool, v))
+        result <- finalize_tool_result(tool, v)
+        if (isTRUE(tool$tasks) && !is.null(ctx$.task)) {
+          store <- ensure_task_store(server)
+          task_set_result(store, ctx$.task$id, result)
+          term <- if (isTRUE(result$isError)) "failed" else "completed"
+          task_update_status(store, ctx$.task$id, term)
+        }
+        jrpc_response(marker$.id, result)
       },
       onRejected = function(e) {
         cancel_entry_close(session, marker$.id)
+        if (isTRUE(tool$tasks) && !is.null(ctx$.task)) {
+          store <- ensure_task_store(server)
+          task_update_status(store, ctx$.task$id, "failed")
+        }
         jrpc_error(marker$.id, jrpc_codes$internal_error,
                    conditionMessage(e))
       }))

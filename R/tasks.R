@@ -50,6 +50,27 @@ task_append_message <- function(store, id, message) {
   assign(id, t, envir = store)
 }
 
+# Record the final tool-handler return value on the task so a later
+# `tasks/result` call can deliver it. Used by the dispatcher when a
+# task-mode tool's promise resolves.
+task_set_result <- function(store, id, result) {
+  t <- task_get(store, id)
+  if (is.null(t)) return(invisible(NULL))
+  t$result <- result
+  t$last_updated <- Sys.time()
+  assign(id, t, envir = store)
+}
+
+# Drop the queued messages for a task. Called on `tasks/cancel` so
+# the cancelled task doesn't surface any further mid-flight events
+# via a later `tasks/result` poll.
+task_clear_messages <- function(store, id) {
+  t <- task_get(store, id)
+  if (is.null(t)) return(invisible(NULL))
+  t$messages <- list()
+  assign(id, t, envir = store)
+}
+
 # Build the `ctx$task` handle exposed to tool handlers when their tool
 # declaration set `tasks = TRUE`. Methods: $id, $status(), $update_status(),
 # $append_message(), $cancelled().
@@ -104,6 +125,7 @@ handle_tasks_cancel <- function(server, session, params, msg) {
                       sprintf("task already %s", current$status)))
   }
   task_update_status(store, id, "cancelled")
+  task_clear_messages(store, id)
   emit_task_status(session, id, "cancelled")
   list()
 }
@@ -166,5 +188,8 @@ handle_tasks_result <- function(server, session, params, msg) {
   }
   drop_nulls(list(taskId = t$id,
                   status = t$status,
-                  result = t$result))
+                  result = t$result,
+                  messages = if (length(t$messages) > 0L) {
+                    j_list(t$messages)
+                  } else NULL))
 }

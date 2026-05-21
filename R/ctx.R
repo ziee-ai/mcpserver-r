@@ -16,11 +16,25 @@
   }
   switch(name,
     send_log = function(level, message, logger = NULL, data = NULL) {
-      send_log(x$.session, level, message, logger, data)
+      envelope <- send_log(x$.session, level, message, logger, data)
+      task_handle <- get0(".task", envir = x, inherits = FALSE)
+      if (!is.null(envelope) && !is.null(task_handle)) {
+        # Mirror the notification into the task's message queue so a
+        # later tasks/result call can return queued messages alongside
+        # the final result.
+        safely(task_handle$append_message(envelope), log = FALSE)
+      }
+      invisible(envelope)
     },
     send_progress = function(progress, total = NULL, message = NULL) {
-      send_progress(x$.session, x$progress_token, progress, total, message,
-                    related_request_id = x$.msg$id)
+      envelope <- send_progress(x$.session, x$progress_token, progress,
+                                total, message,
+                                related_request_id = x$.msg$id)
+      task_handle <- get0(".task", envir = x, inherits = FALSE)
+      if (!is.null(envelope) && !is.null(task_handle)) {
+        safely(task_handle$append_message(envelope), log = FALSE)
+      }
+      invisible(envelope)
     },
     cancelled = function() {
       # In-process fast path: bidirectional tools run on the transport

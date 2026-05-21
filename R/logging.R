@@ -17,6 +17,8 @@ handle_logging_set_level <- function(server, session, params, msg) {
 }
 
 # Emit a logging notification respecting the session's current level.
+# Returns the envelope that was sent (or NULL when filtered) so the
+# caller can mirror it into a task message queue.
 send_log <- function(session, level, message, logger = NULL,
                      data = NULL) {
   if (log_level_rank(level) < log_level_rank(session$log_level)) {
@@ -27,5 +29,7 @@ send_log <- function(session, level, message, logger = NULL,
     logger = logger,
     data = if (is.null(data)) list(message = message) else data
   ))
-  session$send(jrpc_notification("notifications/message", params))
+  envelope <- jrpc_notification("notifications/message", params)
+  session$send(envelope)
+  invisible(envelope)
 }

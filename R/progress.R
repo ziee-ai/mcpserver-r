@@ -11,7 +11,9 @@ send_progress <- function(session, token, progress,
     message = message,
     relatedRequestId = related_request_id
   ))
-  session$send(jrpc_notification("notifications/progress", params))
+  envelope <- jrpc_notification("notifications/progress", params)
+  session$send(envelope)
+  invisible(envelope)
 }
 
 handle_progress_in <- function(server, session, params) {
