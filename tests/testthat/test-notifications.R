@@ -31,6 +31,38 @@ test_that("send_progress no-ops when token is NULL, emits otherwise", {
   expect_equal(out$msgs[[1L]]$params$progressToken, "tok")
 })
 
+test_that("send_progress emits `relatedRequestId` when supplied", {
+  srv <- new_server("t")
+  out <- new.env(parent = emptyenv()); out$msgs <- list()
+  s <- mcpserver:::Session$new("t", srv,
+    function(e) out$msgs <- c(out$msgs, list(e)))
+  mcpserver:::send_progress(s, "tok", 1, total = 10,
+                            message = "step",
+                            related_request_id = 42L)
+  expect_equal(out$msgs[[1L]]$params$relatedRequestId, 42L)
+})
+
+test_that("send_progress omits `relatedRequestId` when not supplied", {
+  srv <- new_server("t")
+  out <- new.env(parent = emptyenv()); out$msgs <- list()
+  s <- mcpserver:::Session$new("t", srv,
+    function(e) out$msgs <- c(out$msgs, list(e)))
+  mcpserver:::send_progress(s, "tok", 1)
+  expect_null(out$msgs[[1L]]$params$relatedRequestId)
+})
+
+test_that("ctx$send_progress() auto-fills relatedRequestId from msg$id", {
+  srv <- new_server("t")
+  out <- new.env(parent = emptyenv()); out$msgs <- list()
+  s <- mcpserver:::Session$new("t", srv,
+    function(e) out$msgs <- c(out$msgs, list(e)))
+  msg <- list(id = 7L, params = list(`_meta` = list(progressToken = "tok7")))
+  ctx <- mcpserver:::make_ctx(s, msg)
+  ctx$send_progress(1, total = 3, message = "ok")
+  expect_equal(out$msgs[[1L]]$params$progressToken, "tok7")
+  expect_equal(out$msgs[[1L]]$params$relatedRequestId, 7L)
+})
+
 test_that("notifications/cancelled sets the cancel flag", {
   srv <- new_server("t")
   s <- mcpserver:::Session$new("t", srv, function(e) NULL)

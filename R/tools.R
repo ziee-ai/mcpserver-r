@@ -12,6 +12,11 @@
 #' logging, sampling, elicitation, and roots helpers).
 #'
 #' @param name Tool identifier (must be unique within a server).
+#' @param title Optional human-readable display name. Distinct from
+#'   `name` (which is the programmatic identifier) and from
+#'   `annotations$title` (legacy shape kept for back-compat with
+#'   pre-2025-06-18 clients). Modern clients prefer this top-level
+#'   field per spec.
 #' @param description Human-readable description.
 #' @param input_schema A schema built with [schema()].
 #' @param output_schema Optional schema for the tool's structured content.
@@ -19,7 +24,11 @@
 #'   `list(readOnlyHint = TRUE)`).
 #' @param handler A function `function(args, ctx)`.
 #' @param tasks Whether the tool participates in the experimental
-#'   tasks lifecycle (default `FALSE`).
+#'   tasks lifecycle (default `FALSE`). When `TRUE`, the tool's
+#'   `tools/list` descriptor emits `execution.taskSupport = "required"`
+#'   so spec-strict clients can discover task support before calling.
+#' @param meta Optional named list emitted as `_meta` on the
+#'   `tools/list` descriptor. Arbitrary metadata for client-side use.
 #' @param bidirectional Set `TRUE` for tools that issue server-to-client
 #'   requests (`ctx$request_sampling()`, `ctx$request_elicitation()`,
 #'   `ctx$request_roots()`). Such handlers execute on the transport
@@ -43,7 +52,9 @@ new_tool <- function(name,
                      annotations = NULL,
                      handler,
                      tasks = FALSE,
-                     bidirectional = FALSE) {
+                     bidirectional = FALSE,
+                     title = NULL,
+                     meta = NULL) {
   stopifnot(is.character(name), length(name) == 1L)
   stopifnot(is.function(handler))
   # SEP-986: tool names must match ^[A-Za-z0-9_./-]+$ and be 1-64 chars.
@@ -71,15 +82,24 @@ new_tool <- function(name,
       stop("tool annotation 'title' must be a scalar character")
     }
   }
+  if (!is.null(title) &&
+      !(is.character(title) && length(title) == 1L)) {
+    stop("tool 'title' must be a scalar character")
+  }
+  if (!is.null(meta) && (!is.list(meta) || is.null(names(meta)))) {
+    stop("tool 'meta' must be a named list")
+  }
   out <- list(
     name = name,
+    title = title,
     description = as.character(description),
     input_schema = input_schema,
     output_schema = output_schema,
     annotations = annotations,
     handler = handler,
     tasks = isTRUE(tasks),
-    bidirectional = isTRUE(bidirectional)
+    bidirectional = isTRUE(bidirectional),
+    meta = meta
   )
   attr(out, "mcp_kind") <- "tool"
   out
@@ -92,8 +112,20 @@ tool_descriptor <- function(tool) {
     description = tool$description,
     inputSchema = tool$input_schema
   )
+  if (!is.null(tool$title))         desc$title        <- tool$title
   if (!is.null(tool$output_schema)) desc$outputSchema <- tool$output_schema
   if (!is.null(tool$annotations))   desc$annotations  <- tool$annotations
+  if (isTRUE(tool$tasks)) {
+    # R's task-mode handlers work via either the synchronous tools/call
+    # path or via SEP-1686 task-augmented calls (the task handle on
+    # ctx$task is exposed in both cases). Per the spec, "optional"
+    # signals to clients that they MAY use callToolStream but are not
+    # required to. "required" would force the TS SDK client to refuse
+    # plain client.callTool() on this tool, which doesn't match R's
+    # actual behaviour.
+    desc$execution <- list(taskSupport = "optional")
+  }
+  if (!is.null(tool$meta))          desc$`_meta`      <- tool$meta
   desc
 }
 

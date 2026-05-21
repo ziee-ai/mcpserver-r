@@ -33,6 +33,8 @@ new_prompt_argument <- function(name, description = NULL,
 #' @param arguments List of [new_prompt_argument()] declarations.
 #' @param complete Optional named list of completion functions.
 #' @param handler A function `function(args, ctx)`.
+#' @param title Optional human-readable display name, distinct from
+#'   the programmatic `name`.
 #' @return A prompt descriptor (tagged list).
 #' @export
 #' @examples
@@ -45,10 +47,16 @@ new_prompt_argument <- function(name, description = NULL,
 new_prompt <- function(name, description,
                        arguments = list(),
                        complete = NULL,
-                       handler) {
+                       handler,
+                       title = NULL) {
   stopifnot(is.function(handler))
+  if (!is.null(title) &&
+      !(is.character(title) && length(title) == 1L)) {
+    stop("prompt 'title' must be a scalar character")
+  }
   out <- list(
     name = as.character(name),
+    title = title,
     description = as.character(description),
     arguments = arguments,
     complete = complete,
@@ -59,9 +67,11 @@ new_prompt <- function(name, description,
 }
 
 prompt_descriptor <- function(p) {
-  list(name = p$name,
-       description = p$description,
-       arguments = j_list(p$arguments %||% list()))
+  out <- list(name = p$name,
+              description = p$description,
+              arguments = j_list(p$arguments %||% list()))
+  if (!is.null(p$title)) out$title <- p$title
+  out
 }
 
 handle_prompts_list <- function(server, session, params, msg = NULL) {

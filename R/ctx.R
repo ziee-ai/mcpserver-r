@@ -19,7 +19,8 @@
       send_log(x$.session, level, message, logger, data)
     },
     send_progress = function(progress, total = NULL, message = NULL) {
-      send_progress(x$.session, x$progress_token, progress, total, message)
+      send_progress(x$.session, x$progress_token, progress, total, message,
+                    related_request_id = x$.msg$id)
     },
     cancelled = function() {
       # In-process fast path: bidirectional tools run on the transport

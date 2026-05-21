@@ -107,6 +107,45 @@ test_that("update_prompt and remove_prompt round-trip", {
   expect_false(exists("p", envir = srv$prompts, inherits = FALSE))
 })
 
+test_that("update_tool preserves title and meta when changing description", {
+  srv <- new_server("t")
+  add_capability(srv, new_tool(
+    "k", "old", schema(list()),
+    handler = function(args, ctx) response_text("ok"),
+    title = "Original", meta = list(team = "core")))
+  update_tool(srv, "k", description = "new desc")
+  t <- get("k", envir = srv$tools, inherits = FALSE)
+  expect_equal(t$title, "Original")
+  expect_equal(t$meta$team, "core")
+})
+
+test_that("update_tool can replace title and meta", {
+  srv <- new_server("t")
+  add_capability(srv, new_tool(
+    "k", "k", schema(list()),
+    handler = function(args, ctx) response_text("ok"),
+    title = "Original"))
+  update_tool(srv, "k", title = "Renamed",
+              meta = list(team = "platform"))
+  t <- get("k", envir = srv$tools, inherits = FALSE)
+  expect_equal(t$title, "Renamed")
+  expect_equal(t$meta$team, "platform")
+})
+
+test_that("update_tool toggling tasks updates the wire execution field", {
+  srv <- new_server("t")
+  add_capability(srv, new_tool(
+    "k", "k", schema(list()),
+    handler = function(args, ctx) response_text("ok"),
+    tasks = FALSE))
+  s <- mcpserver:::Session$new("s", srv, function(e) NULL)
+  res1 <- mcpserver:::handle_tools_list(srv, s, list())
+  expect_null(res1$tools[[1L]]$execution)
+  update_tool(srv, "k", tasks = TRUE)
+  res2 <- mcpserver:::handle_tools_list(srv, s, list())
+  expect_equal(res2$tools[[1L]]$execution$taskSupport, "optional")
+})
+
 test_that("schedule_list_changed coalesces back-to-back calls", {
   srv <- new_server("t")
   add_capability(srv, new_tool(

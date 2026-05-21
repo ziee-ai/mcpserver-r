@@ -63,6 +63,36 @@ test_that("resource list reflects current registrations after remove", {
   expect_setequal(uris2, "test://b")
 })
 
+test_that("update_resource preserves title across other-field updates", {
+  srv <- new_server("t")
+  add_capability(srv, new_resource(
+    "r", "old", "test://r", title = "Pretty",
+    handler = function(p, c) "x"))
+  update_resource(srv, "test://r", description = "new")
+  r <- get("test://r", envir = srv$resources, inherits = FALSE)
+  expect_equal(r$title, "Pretty")
+})
+
+test_that("update_resource can replace the title", {
+  srv <- new_server("t")
+  add_capability(srv, new_resource(
+    "r", "x", "test://r", title = "Original",
+    handler = function(p, c) "x"))
+  update_resource(srv, "test://r", title = "Renamed")
+  r <- get("test://r", envir = srv$resources, inherits = FALSE)
+  expect_equal(r$title, "Renamed")
+})
+
+test_that("update_resource_template can replace the title", {
+  srv <- new_server("t")
+  add_capability(srv, new_resource_template(
+    "rt", "x", "test://rt/{id}", title = "Original",
+    handler = function(p, c) "x"))
+  update_resource_template(srv, "rt", title = "Renamed")
+  t <- get("rt", envir = srv$resource_templates, inherits = FALSE)
+  expect_equal(t$title, "Renamed")
+})
+
 test_that("template variables propagate to readCallback after update", {
   srv <- new_server("t")
   add_capability(srv, new_resource_template(

@@ -16,6 +16,8 @@
 #' @param mime_type Optional MIME type.
 #' @param annotations Optional MCP annotations list.
 #' @param handler A function `function(params, ctx)`.
+#' @param title Optional human-readable display name, distinct from
+#'   the programmatic `name`.
 #' @return A resource descriptor (tagged list).
 #' @export
 #' @examples
@@ -25,10 +27,16 @@
 new_resource <- function(name, description, uri,
                          mime_type = NULL,
                          annotations = NULL,
-                         handler) {
+                         handler,
+                         title = NULL) {
   stopifnot(is.function(handler))
+  if (!is.null(title) &&
+      !(is.character(title) && length(title) == 1L)) {
+    stop("resource 'title' must be a scalar character")
+  }
   out <- list(
     name = as.character(name),
+    title = title,
     description = as.character(description),
     uri = as.character(uri),
     mime_type = mime_type,
@@ -56,6 +64,8 @@ new_resource <- function(name, description, uri,
 #' @param handler A function `function(params, ctx)`.
 #' @param complete Optional named list of completion functions keyed by
 #'   variable name.
+#' @param title Optional human-readable display name, distinct from
+#'   the programmatic `name`.
 #' @return A resource template descriptor (tagged list).
 #' @export
 #' @examples
@@ -65,10 +75,16 @@ new_resource_template <- function(name, description, uri_template,
                                   mime_type = NULL,
                                   annotations = NULL,
                                   handler,
-                                  complete = NULL) {
+                                  complete = NULL,
+                                  title = NULL) {
   stopifnot(is.function(handler))
+  if (!is.null(title) &&
+      !(is.character(title) && length(title) == 1L)) {
+    stop("resource_template 'title' must be a scalar character")
+  }
   out <- list(
     name = as.character(name),
+    title = title,
     description = as.character(description),
     uri_template = as.character(uri_template),
     mime_type = mime_type,
@@ -82,6 +98,7 @@ new_resource_template <- function(name, description, uri_template,
 
 resource_descriptor <- function(r) {
   out <- list(name = r$name, description = r$description, uri = r$uri)
+  if (!is.null(r$title))       out$title       <- r$title
   if (!is.null(r$mime_type))   out$mimeType    <- r$mime_type
   if (!is.null(r$annotations)) out$annotations <- r$annotations
   out
@@ -90,6 +107,7 @@ resource_descriptor <- function(r) {
 resource_template_descriptor <- function(t) {
   out <- list(name = t$name, description = t$description,
               uriTemplate = t$uri_template)
+  if (!is.null(t$title))       out$title       <- t$title
   if (!is.null(t$mime_type))   out$mimeType    <- t$mime_type
   if (!is.null(t$annotations)) out$annotations <- t$annotations
   out
