@@ -274,8 +274,20 @@ uri_template_match <- function(template, uri) {
         body <- paste0(body, .escape_literal(sep), bit)
       }
     }
-    pattern <- paste0(pattern, "(?:", .escape_literal(prefix),
-                      body, ")?")
+    # The default / level-1 / +-reserved / #-fragment operators
+    # *require* a value during reverse matching — RFC 6570 says
+    # variables can be undefined during expansion, but a URI being
+    # matched against the template must carry a non-empty value
+    # for those positions. The named operators (;, ?, &) and the
+    # path operators may legitimately be absent, so keep the
+    # outer group optional there.
+    required <- op %in% c("", "+", "#", ".", "/")
+    if (required) {
+      pattern <- paste0(pattern, .escape_literal(prefix), body)
+    } else {
+      pattern <- paste0(pattern, "(?:", .escape_literal(prefix),
+                        body, ")?")
+    }
   }
   full <- paste0("^", pattern, "$")
   m <- regmatches(uri, regexec(full, uri, perl = TRUE))[[1L]]

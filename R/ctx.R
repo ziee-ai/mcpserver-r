@@ -16,8 +16,14 @@
   }
   switch(name,
     send_log = function(level, message, logger = NULL, data = NULL) {
-      envelope <- send_log(x$.session, level, message, logger, data)
+      # Per SEP-1686: notifications must not flow after a task reaches
+      # a terminal status (completed/failed/cancelled). Silently drop.
       task_handle <- get0(".task", envir = x, inherits = FALSE)
+      if (!is.null(task_handle) &&
+          task_handle$status() %in% c("completed", "failed", "cancelled")) {
+        return(invisible(NULL))
+      }
+      envelope <- send_log(x$.session, level, message, logger, data)
       if (!is.null(envelope) && !is.null(task_handle)) {
         # Mirror the notification into the task's message queue so a
         # later tasks/result call can return queued messages alongside
@@ -27,10 +33,14 @@
       invisible(envelope)
     },
     send_progress = function(progress, total = NULL, message = NULL) {
+      task_handle <- get0(".task", envir = x, inherits = FALSE)
+      if (!is.null(task_handle) &&
+          task_handle$status() %in% c("completed", "failed", "cancelled")) {
+        return(invisible(NULL))
+      }
       envelope <- send_progress(x$.session, x$progress_token, progress,
                                 total, message,
                                 related_request_id = x$.msg$id)
-      task_handle <- get0(".task", envir = x, inherits = FALSE)
       if (!is.null(envelope) && !is.null(task_handle)) {
         safely(task_handle$append_message(envelope), log = FALSE)
       }
@@ -71,9 +81,11 @@
     },
     request_sampling = function(messages, model_preferences = NULL,
                                 system_prompt = NULL,
-                                max_tokens = 1024L, timeout = 30) {
+                                max_tokens = 1024L, timeout = 30,
+                                tools = NULL, tool_choice = NULL) {
       request_sampling_impl(x$.session, messages, model_preferences,
-                            system_prompt, max_tokens, timeout)
+                            system_prompt, max_tokens, timeout,
+                            tools = tools, tool_choice = tool_choice)
     },
     request_sampling_async = function(messages, model_preferences = NULL,
                                       system_prompt = NULL,

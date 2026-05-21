@@ -53,10 +53,26 @@ notification_handlers <- function() list(
 
 # initialize / ping handlers ----------------------------------------------
 
+# Apply MCP-SDK-compatible preprocessing to the client's capability
+# declaration so server-side checks can rely on a canonical shape.
+# Today this only injects the implicit `form` sub-capability when a
+# client advertises an empty `elicitation: {}` (back-compat per the
+# TS SDK's ElicitationCapabilitySchema preprocessor).
+normalize_client_capabilities <- function(caps) {
+  if (!is.list(caps)) return(caps)
+  el <- caps$elicitation
+  if (!is.null(el) && is.list(el) &&
+      length(el) == 0L) {
+    caps$elicitation <- list(form = list(applyDefaults = TRUE))
+  }
+  caps
+}
+
 handle_initialize <- function(server, session, params, msg = NULL) {
   negotiated <- negotiate_protocol_version(params$protocolVersion)
   session$protocol_version <- negotiated
-  session$client_capabilities <- params$capabilities %||% list()
+  session$client_capabilities <- normalize_client_capabilities(
+    params$capabilities %||% list())
   session$client_info <- params$clientInfo %||% list()
   drop_nulls(list(
     protocolVersion = negotiated,
