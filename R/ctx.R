@@ -7,8 +7,8 @@
 #' @export
 `$.McpCtx` <- function(x, name) {
   if (name %in% c("session_id", "client_capabilities", "auth_subject",
-                  "auth_scopes", "progress_token", ".session", ".msg",
-                  ".task")) {
+                  "auth_scopes", "progress_token", "request_info",
+                  ".session", ".msg", ".task")) {
     return(get0(name, envir = x, inherits = FALSE))
   }
   if (name == "task") {

@@ -10,6 +10,7 @@ serve_http(
   port = 3000L,
   path = "/mcp",
   allowed_origins = c("http://localhost", "http://127.0.0.1"),
+  allowed_hosts = NULL,
   require_origin = TRUE,
   tls = NULL,
   max_event_log = 1000L,
@@ -28,6 +29,10 @@ serve_http(
 \item{path}{URL path for the MCP endpoint.}
 
 \item{allowed_origins}{Character vector of allowed \code{Origin} prefixes.}
+
+\item{allowed_hosts}{Optional character vector of allowed values for
+the HTTP \code{Host} header (bare host or \code{host:port}). When \code{NULL} (the
+default) the Host check is skipped.}
 
 \item{require_origin}{Whether \code{Origin} is required (default \code{TRUE}).}
 

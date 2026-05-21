@@ -52,9 +52,18 @@ jrpc_notification <- function(method, params = NULL) {
 jrpc_kind <- function(msg) {
   if (!is.list(msg)) return("invalid")
   has_id     <- "id" %in% names(msg)
-  has_method <- "method" %in% names(msg)
+  has_method <- "method" %in% names(msg) &&
+                is.character(msg$method) &&
+                length(msg$method) == 1L &&
+                nzchar(msg$method)
   has_result <- "result" %in% names(msg)
   has_error  <- "error" %in% names(msg)
+  # Reject envelopes whose declared jsonrpc isn't "2.0" — they're
+  # protocol-incompatible. Missing jsonrpc is permissive (some
+  # malformed inputs omit it).
+  if ("jsonrpc" %in% names(msg) && !identical(msg$jsonrpc, "2.0")) {
+    return("invalid")
+  }
   if (has_method && has_id) return("request")
   if (has_method && !has_id) return("notification")
   if (has_id && (has_result || has_error)) return("response")

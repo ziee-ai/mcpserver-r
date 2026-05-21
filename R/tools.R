@@ -52,6 +52,25 @@ new_tool <- function(name,
       "tool name '%s' violates SEP-986 (allowed: A-Z a-z 0-9 _ . / - ; max 64 chars)",
       name))
   }
+  # Validate the shape of annotation hints: per the spec these are all
+  # booleans. `title` may be a string. Anything else is rejected so
+  # malformed annotations don't ship to clients.
+  if (!is.null(annotations)) {
+    bool_hints <- c("readOnlyHint", "destructiveHint",
+                    "idempotentHint", "openWorldHint")
+    for (h in intersect(bool_hints, names(annotations))) {
+      if (!is.logical(annotations[[h]]) ||
+          length(annotations[[h]]) != 1L) {
+        stop(sprintf("tool annotation '%s' must be a scalar logical",
+                     h))
+      }
+    }
+    if (!is.null(annotations$title) &&
+        !(is.character(annotations$title) &&
+          length(annotations$title) == 1L)) {
+      stop("tool annotation 'title' must be a scalar character")
+    }
+  }
   out <- list(
     name = name,
     description = as.character(description),
@@ -105,11 +124,13 @@ handle_tools_call <- function(server, session, params, msg) {
   flag <- new.env(parent = emptyenv())
   flag$cancelled <- FALSE
   assign(as.character(msg$id), flag, envir = session$cancel)
-  # If the tool opts into the tasks lifecycle, create a task entry and
-  # expose a `ctx$task` handle that handlers can use to publish progress.
+  # If the tool opts into the tasks lifecycle, create a task entry
+  # scoped to this session and expose a `ctx$task` handle that handlers
+  # can use to publish progress.
   if (isTRUE(tool$tasks)) {
     store <- ensure_task_store(server)
-    task <- task_create(store, tool$name)
+    task <- task_create(store, tool$name,
+                        session_id = session$session_id)
     task_update_status(store, task$id, "running")
     ctx$.task <- make_task_handle(store, task$id)
   }

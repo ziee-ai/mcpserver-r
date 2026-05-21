@@ -28,6 +28,11 @@ test_that("call_client_blocking times out cleanly when no response arrives", {
                                      params = NULL, timeout = 0.3),
     error = function(e) conditionMessage(e))
   expect_match(err, "timed out")
-  expect_equal(length(sent$messages), 1L)
+  # The first message is the outgoing request; the second is the
+  # notifications/cancelled emitted on timeout so the client doesn't
+  # hang waiting for a response that will never arrive.
+  expect_equal(length(sent$messages), 2L)
   expect_equal(sent$messages[[1L]]$method, "test/method")
+  expect_equal(sent$messages[[2L]]$method, "notifications/cancelled")
+  expect_equal(sent$messages[[2L]]$params$reason, "timeout")
 })

@@ -95,6 +95,10 @@ route_message <- function(server, session, msg) {
       if (method %in% names(sync)) {
         res <- tryCatch(
           sync[[method]](server, session, msg$params %||% list(), msg),
+          mcp_error = function(e) jrpc_error(msg$id,
+                                             e$code %||% jrpc_codes$internal_error,
+                                             conditionMessage(e),
+                                             data = e$data),
           error = function(e) jrpc_error(msg$id, jrpc_codes$internal_error,
                                          conditionMessage(e))
         )
@@ -104,6 +108,10 @@ route_message <- function(server, session, msg) {
       if (method %in% names(asyn)) {
         marker <- tryCatch(
           asyn[[method]](server, session, msg$params %||% list(), msg),
+          mcp_error = function(e) jrpc_error(msg$id,
+                                             e$code %||% jrpc_codes$internal_error,
+                                             conditionMessage(e),
+                                             data = e$data),
           error = function(e) jrpc_error(msg$id, jrpc_codes$internal_error,
                                          conditionMessage(e))
         )
@@ -188,26 +196,53 @@ finalize_async <- function(marker, server, session) {
       # request table directly. Wrap in a resolved promise for uniform
       # downstream handling.
       val <- tryCatch(tool$handler(args, ctx),
+                      mcp_error = function(e) list(.mcp_err = TRUE,
+                                                   code = e$code %||% jrpc_codes$internal_error,
+                                                   message = conditionMessage(e),
+                                                   data = e$data),
                       error = function(e) list(.mcp_err = TRUE,
                                                 message = conditionMessage(e)))
       out <- if (is.list(val) && isTRUE(val$.mcp_err)) {
-        jrpc_error(marker$.id, jrpc_codes$internal_error,
-                   val$message %||% "tool failed")
+        jrpc_error(marker$.id,
+                   val$code %||% jrpc_codes$internal_error,
+                   val$message %||% "tool failed",
+                   data = val$data)
       } else {
+        # Clean up the cancellation flag we left in session$cancel.
+        cancel_key <- as.character(marker$.id)
+        if (exists(cancel_key, envir = session$cancel, inherits = FALSE)) {
+          rm(list = cancel_key, envir = session$cancel)
+        }
         jrpc_response(marker$.id, finalize_tool_result(tool, val))
       }
       return(inline_promise(out))
     }
-    expr <- quote(handler_fn(call_args, call_ctx))
+    expr <- quote({
+      tryCatch(handler_fn(call_args, call_ctx),
+               mcp_error = function(e) list(.mcp_err = TRUE,
+                                             code = e$code,
+                                             message = conditionMessage(e),
+                                             data = e$data),
+               error = function(e) list(.mcp_err = TRUE,
+                                         message = conditionMessage(e)))
+    })
     p <- with_mirai(expr,
                     list(handler_fn = tool$handler,
                          call_args = args,
                          call_ctx = ctx))
     return(promises::then(p,
       onFulfilled = function(v) {
+        # Clean up the cancellation flag whether the handler succeeded
+        # or returned an mcp_err sentinel.
+        cancel_key <- as.character(marker$.id)
+        if (exists(cancel_key, envir = session$cancel, inherits = FALSE)) {
+          rm(list = cancel_key, envir = session$cancel)
+        }
         if (is.list(v) && isTRUE(v$.mcp_err)) {
-          return(jrpc_error(marker$.id, jrpc_codes$internal_error,
-                            v$message %||% "tool failed"))
+          return(jrpc_error(marker$.id,
+                            v$code %||% jrpc_codes$internal_error,
+                            v$message %||% "tool failed",
+                            data = v$data))
         }
         jrpc_response(marker$.id, finalize_tool_result(tool, v))
       },

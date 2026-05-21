@@ -17,12 +17,13 @@ ensure_task_store <- function(server) {
   server$task_store
 }
 
-task_create <- function(store, tool_name) {
+task_create <- function(store, tool_name, session_id = NULL) {
   id <- new_uuid()
   task <- list(id = id, tool = tool_name,
                status = "pending",
                messages = list(),
                result = NULL,
+               session_id = session_id,
                created = Sys.time())
   assign(id, task, envir = store)
   task
@@ -86,14 +87,17 @@ handle_tasks_list <- function(server, session, params, msg = NULL) {
 
 handle_tasks_cancel <- function(server, session, params, msg) {
   store <- ensure_task_store(server)
-  # Per the MCP tasks spec the param is `taskId`; accept the older `id`
-  # alias too for backwards compatibility with pre-spec clients.
   id <- params$taskId %||% params$id
   if (is.null(id) ||
       !exists(id, envir = store, inherits = FALSE)) {
     return(jrpc_error(msg$id, jrpc_codes$invalid_params, "unknown task"))
   }
   current <- task_get(store, id)
+  if (!is.null(current$session_id) &&
+      !identical(current$session_id, session$session_id)) {
+    return(jrpc_error(msg$id, jrpc_codes$invalid_params,
+                      "task does not belong to this session"))
+  }
   terminal <- c("completed", "failed", "cancelled")
   if (current$status %in% terminal) {
     return(jrpc_error(msg$id, jrpc_codes$invalid_request,
@@ -122,13 +126,20 @@ handle_tasks_get <- function(server, session, params, msg) {
     return(jrpc_error(msg$id, jrpc_codes$invalid_params, "unknown task"))
   }
   t <- task_get(store, id)
+  # Enforce session ownership — tasks are session-scoped per spec.
+  if (!is.null(t$session_id) &&
+      !identical(t$session_id, session$session_id)) {
+    return(jrpc_error(msg$id, jrpc_codes$invalid_params,
+                      "task does not belong to this session"))
+  }
+  last <- t$last_updated %||% t$created
   drop_nulls(list(
     taskId = t$id,
     status = t$status,
     statusMessage = NULL,
     createdAt = format(t$created, "%Y-%m-%dT%H:%M:%OS3Z",
                        tz = "UTC"),
-    lastUpdatedAt = format(t$created, "%Y-%m-%dT%H:%M:%OS3Z",
+    lastUpdatedAt = format(last, "%Y-%m-%dT%H:%M:%OS3Z",
                            tz = "UTC")
   ))
 }
@@ -141,10 +152,13 @@ handle_tasks_result <- function(server, session, params, msg) {
       !exists(id, envir = store, inherits = FALSE)) {
     return(jrpc_error(msg$id, jrpc_codes$invalid_params, "unknown task"))
   }
-  terminal <- c("completed", "failed", "cancelled")
   t <- task_get(store, id)
-  # Bounded poll loop on the transport thread — we yield to later so
-  # other handlers can progress while we wait.
+  if (!is.null(t$session_id) &&
+      !identical(t$session_id, session$session_id)) {
+    return(jrpc_error(msg$id, jrpc_codes$invalid_params,
+                      "task does not belong to this session"))
+  }
+  terminal <- c("completed", "failed", "cancelled")
   deadline <- Sys.time() + 5
   while (!(t$status %in% terminal) && Sys.time() < deadline) {
     later::run_now(timeoutSecs = 0.05)

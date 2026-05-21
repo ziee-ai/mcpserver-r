@@ -49,6 +49,11 @@ call_client_blocking <- function(session, method, params, timeout) {
     rm(list = key, envir = session$pending)
   }
   if (!isTRUE(bag$done)) {
+    # Tell the client we're abandoning the request so they don't
+    # silently wait forever.
+    safely(session$send(jrpc_notification(
+      "notifications/cancelled",
+      list(requestId = rid, reason = "timeout"))), log = FALSE)
     stop(sprintf("server->client request '%s' timed out", method))
   }
   if (isTRUE(bag$is_error)) {

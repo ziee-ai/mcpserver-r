@@ -27,6 +27,9 @@
 #' @param port TCP port.
 #' @param path URL path for the MCP endpoint.
 #' @param allowed_origins Character vector of allowed `Origin` prefixes.
+#' @param allowed_hosts Optional character vector of allowed values for
+#'   the HTTP `Host` header (bare host or `host:port`). When `NULL` (the
+#'   default) the Host check is skipped.
 #' @param require_origin Whether `Origin` is required (default `TRUE`).
 #' @param tls Optional TLS configuration from `nanonext::tls_config()`.
 #' @param max_event_log Maximum events retained per session for SSE replay.
@@ -44,6 +47,7 @@ serve_http <- function(mcp,
                        path = "/mcp",
                        allowed_origins = c("http://localhost",
                                            "http://127.0.0.1"),
+                       allowed_hosts = NULL,
                        require_origin = TRUE,
                        tls = NULL,
                        max_event_log = 1000L,
@@ -57,15 +61,29 @@ serve_http <- function(mcp,
   state$server <- mcp
   state$auth   <- auth
   state$allowed_origins <- allowed_origins
+  state$allowed_hosts <- allowed_hosts
   state$require_origin <- isTRUE(require_origin)
   state$max_event_log <- as.integer(max_event_log)
+  state$path <- path
 
   handlers <- list(
     nanonext::handler(path, http_post_handler(state),  method = "POST"),
     nanonext::handler_stream(path, http_get_handler(state),
                              on_close = http_stream_on_close(state),
                              method = "GET"),
-    nanonext::handler(path, http_delete_handler(state), method = "DELETE")
+    nanonext::handler(path, http_delete_handler(state), method = "DELETE"),
+    # Public OAuth resource-server metadata discovery
+    # (RFC 9728 / MCP authorization spec).
+    nanonext::handler("/.well-known/oauth-protected-resource",
+                      http_protected_resource_metadata_handler(state),
+                      method = "GET"),
+    # Spec-recommended 405 with `Allow` for unsupported methods.
+    nanonext::handler(path, http_method_not_allowed_handler(state),
+                      method = "PUT"),
+    nanonext::handler(path, http_method_not_allowed_handler(state),
+                      method = "PATCH"),
+    nanonext::handler(path, http_method_not_allowed_handler(state),
+                      method = "HEAD")
   )
   url <- sprintf("%s://%s:%d",
                  if (is.null(tls)) "http" else "https",
@@ -256,6 +274,12 @@ http_post_handler <- function(state) {
                                 "parse error"))
     }
 
+    # JSON-RPC batch: a top-level array of envelopes. We process each
+    # entry through route_message and stream the responses back as a
+    # JSON array (or 202 when none of the entries expect a result).
+    is_batch <- is.list(msg) && is.null(names(msg)) &&
+                length(msg) > 0L && is.list(msg[[1L]])
+
     is_init <- isTRUE(is.list(msg) && identical(msg$method, "initialize"))
     session_id <- header_get(req$headers, "Mcp-Session-Id")
 
@@ -305,6 +329,45 @@ http_post_handler <- function(state) {
                    inherits = FALSE)
     session$auth_subject <- auth_res$subject
     session$auth_scopes <- auth_res$scopes
+    # Make raw HTTP request metadata available to handlers via ctx.
+    session$request_info <- list(
+      method = req$method,
+      uri = req$uri,
+      headers = req$headers)
+
+    if (is_batch) {
+      responses <- list()
+      for (m in msg) {
+        out <- route_message(state$server, session, m)
+        if (is.null(out)) next  # notifications / responses are bookkeeping
+        if (is.list(out) && isTRUE(out$.async)) {
+          env_f <- new.env(parent = emptyenv()); env_f$done <- FALSE
+          promises::then(finalize_async(out, state$server, session),
+                         onFulfilled = function(v) {
+                           env_f$value <- v; env_f$done <- TRUE
+                         },
+                         onRejected = function(e) {
+                           env_f$value <- jrpc_error(out$.id %||% m$id,
+                                                     jrpc_codes$internal_error,
+                                                     conditionMessage(e))
+                           env_f$done <- TRUE
+                         })
+          deadline <- Sys.time() + 120
+          while (!isTRUE(env_f$done) && Sys.time() < deadline) {
+            later::run_now(timeoutSecs = 0.05)
+          }
+          out <- env_f$value
+        }
+        responses <- c(responses, list(out))
+      }
+      if (length(responses) == 0L) {
+        return(http_make_response(202L,
+          headers = c("Content-Type" = "application/json")))
+      }
+      return(http_make_response(200L,
+        body = jrpc_encode(responses),
+        headers = c("Content-Type" = "application/json")))
+    }
 
     kind <- jrpc_kind(msg)
     if (kind == "notification" || kind == "response") {
@@ -398,6 +461,36 @@ http_stream_on_close <- function(state) {
         rm(list = key, envir = sess$gets)
       }
     }
+  }
+}
+
+http_method_not_allowed_handler <- function(state) {
+  function(req) {
+    http_make_response(405L,
+      body = jrpc_encode(list(jsonrpc = JSONRPC_VERSION, id = NULL,
+                              error = list(code = jrpc_codes$invalid_request,
+                                           message = "Method Not Allowed"))),
+      headers = c("Allow" = "GET, POST, DELETE",
+                  "Content-Type" = "application/json"))
+  }
+}
+
+# Serve the RFC 9728 OAuth protected-resource metadata document.
+http_protected_resource_metadata_handler <- function(state) {
+  function(req) {
+    if (is.null(state$auth)) {
+      return(http_make_response(404L,
+        body = '{"error":"auth not configured"}', json = TRUE))
+    }
+    cfg <- state$auth
+    body <- jrpc_encode(drop_nulls(list(
+      resource = cfg$audience,
+      authorization_servers = I(cfg$issuer),
+      scopes_supported = if (length(cfg$required_scopes) > 0L)
+        I(cfg$required_scopes) else NULL,
+      bearer_methods_supported = I(c("header"))
+    )))
+    http_make_response(200L, body = body, json = TRUE)
   }
 }
 

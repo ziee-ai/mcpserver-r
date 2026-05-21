@@ -173,7 +173,8 @@ oauth_verify_introspection <- function(cfg, token) {
   scopes <- parse_scope(body$scope, body$scp)
   if (length(cfg$required_scopes) > 0L &&
       !all(cfg$required_scopes %in% scopes)) {
-    return(list(ok = FALSE))
+    return(list(ok = FALSE, reason = "insufficient_scope",
+                scopes = scopes))
   }
   ttl <- if (!is.null(body$exp)) {
     max(1, as.numeric(body$exp) - as.numeric(Sys.time()) - cfg$leeway)

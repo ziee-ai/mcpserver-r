@@ -19,6 +19,9 @@ Session <- R6::R6Class(
     roots_cache = NULL,
     auth_subject = NULL,
     auth_scopes = NULL,
+    # Per-call HTTP request metadata (headers / uri / method). Updated
+    # on every POST so tool handlers can read it via ctx$request_info.
+    request_info = NULL,
     # Per-server-stream SSE event log for Last-Event-ID replay (HTTP only).
     event_log = NULL,
     max_event_log = 1000L,
@@ -164,6 +167,7 @@ make_ctx <- function(session, msg = NULL) {
   ctx$auth_subject <- session$auth_subject
   ctx$auth_scopes <- session$auth_scopes
   ctx$progress_token <- msg$params$`_meta`$progressToken
+  ctx$request_info <- session$request_info
   ctx$.session <- session
   ctx$.msg     <- msg
   class(ctx) <- c("McpCtx", "environment")
