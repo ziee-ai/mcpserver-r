@@ -4,6 +4,6 @@
 .Ruserdata
 *.Rcheck/
 *.tar.gz
-docs/
+/docs/
 inst/parity/node_modules/
 inst/parity/package-lock.json
