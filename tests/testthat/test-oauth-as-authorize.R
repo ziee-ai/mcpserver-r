@@ -136,6 +136,87 @@ test_that("auto_consent = FALSE returns an HTML consent page on first GET", {
   expect_match(resp$body, "<form", fixed = FALSE)
 })
 
+setup_cfg_loopback <- function(reg_uri) {
+  cfg <- oauth_server_config(
+    issuer = "https://as.example",
+    audience = "https://mcp.example",
+    auto_consent = TRUE)
+  cfg$client_store$add("c-loop", list(
+    client_id = "c-loop",
+    client_name = "Loopback CLI",
+    redirect_uris = c(reg_uri),
+    token_endpoint_auth_method = "none"))
+  cfg
+}
+
+test_that("RFC 8252: loopback 127.0.0.1 redirect_uri matches any port", {
+  cfg <- setup_cfg_loopback("http://127.0.0.1/cb")
+  resp <- call_authorize(cfg, list(
+    response_type = "code",
+    client_id = "c-loop",
+    redirect_uri = "http://127.0.0.1:54321/cb",
+    code_challenge = "x",
+    code_challenge_method = "S256"))
+  expect_equal(resp$status, 302L)
+  expect_match(unname(resp$headers["Location"]),
+               "^http://127.0.0.1:54321/cb\\?code=")
+})
+
+test_that("RFC 8252: loopback localhost redirect_uri matches any port", {
+  cfg <- setup_cfg_loopback("http://localhost/cb")
+  resp <- call_authorize(cfg, list(
+    response_type = "code",
+    client_id = "c-loop",
+    redirect_uri = "http://localhost:48000/cb",
+    code_challenge = "x",
+    code_challenge_method = "S256"))
+  expect_equal(resp$status, 302L)
+})
+
+test_that("RFC 8252: loopback [::1] redirect_uri matches any port", {
+  cfg <- setup_cfg_loopback("http://[::1]/cb")
+  resp <- call_authorize(cfg, list(
+    response_type = "code",
+    client_id = "c-loop",
+    redirect_uri = "http://[::1]:48000/cb",
+    code_challenge = "x",
+    code_challenge_method = "S256"))
+  expect_equal(resp$status, 302L)
+})
+
+test_that("RFC 8252: registered loopback with port still accepts other port", {
+  cfg <- setup_cfg_loopback("http://127.0.0.1:1000/cb")
+  resp <- call_authorize(cfg, list(
+    response_type = "code",
+    client_id = "c-loop",
+    redirect_uri = "http://127.0.0.1:48000/cb",
+    code_challenge = "x",
+    code_challenge_method = "S256"))
+  expect_equal(resp$status, 302L)
+})
+
+test_that("RFC 8252: loopback with different path is rejected", {
+  cfg <- setup_cfg_loopback("http://127.0.0.1/cb")
+  resp <- call_authorize(cfg, list(
+    response_type = "code",
+    client_id = "c-loop",
+    redirect_uri = "http://127.0.0.1:48000/different",
+    code_challenge = "x",
+    code_challenge_method = "S256"))
+  expect_equal(resp$status, 400L)
+})
+
+test_that("non-loopback redirect_uri still requires exact match (no port relaxation)", {
+  cfg <- setup_cfg_loopback("http://app.example/cb")
+  resp <- call_authorize(cfg, list(
+    response_type = "code",
+    client_id = "c-loop",
+    redirect_uri = "http://app.example:9000/cb",
+    code_challenge = "x",
+    code_challenge_method = "S256"))
+  expect_equal(resp$status, 400L)
+})
+
 test_that("auto_consent = FALSE accepts the resubmitted form and mints a code", {
   cfg <- setup_cfg(auto_consent = FALSE)
   resp <- call_authorize(cfg, list(

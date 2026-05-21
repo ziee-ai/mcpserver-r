@@ -65,11 +65,13 @@ oauth_server_config <- function(issuer,
                                 client_store  = new_oauth_store(),
                                 code_store    = new_oauth_store(),
                                 token_store   = new_oauth_store()) {
+  issuer <- sub("/+$", "", as.character(issuer))
+  validate_issuer_url(issuer)
   if (is.null(signing_key)) {
     signing_key <- openssl::rsa_keygen(2048L)
   }
   cfg <- list(
-    issuer        = sub("/+$", "", as.character(issuer)),
+    issuer        = issuer,
     audience      = as.character(audience),
     signing_key   = signing_key,
     kid           = as.character(kid),
@@ -86,6 +88,64 @@ oauth_server_config <- function(issuer,
   )
   class(cfg) <- "mcp_oauth_server_config"
   cfg
+}
+
+# Validate an AS issuer URL per RFC 8414 §3:
+#   - Must be HTTPS (or HTTP with a loopback host: localhost / 127.0.0.1 /
+#     [::1] — useful for local development per RFC 8252).
+#   - MUST NOT carry a fragment or query string.
+validate_issuer_url <- function(issuer) {
+  if (!grepl("^https?://", issuer, ignore.case = TRUE)) {
+    stop(sprintf("issuer must be an http(s) URL, got: %s", issuer))
+  }
+  if (grepl("#", issuer, fixed = TRUE)) {
+    stop(sprintf("issuer must not contain a fragment: %s", issuer))
+  }
+  if (grepl("\\?", issuer, perl = TRUE)) {
+    stop(sprintf("issuer must not contain a query string: %s", issuer))
+  }
+  if (grepl("^http://", issuer, ignore.case = TRUE)) {
+    # Strip scheme + path so we can inspect the host portion.
+    rest <- sub("^http://", "", issuer, ignore.case = TRUE)
+    host <- sub("[/].*$", "", rest)
+    host <- sub(":[0-9]+$", "", host)
+    if (!(tolower(host) %in% c("localhost", "127.0.0.1", "[::1]"))) {
+      stop(sprintf(
+        "issuer must use HTTPS for non-loopback hosts, got: %s", issuer))
+    }
+  }
+  invisible(NULL)
+}
+
+# RFC 8252 §7.3 — for native apps, redirect_uri matching relaxes the
+# port for loopback addresses (localhost, 127.0.0.1, [::1]) so a CLI
+# that listens on an OS-chosen ephemeral port can still match its
+# port-less registration.
+oauth_redirect_uri_matches <- function(registered, candidate) {
+  if (identical(registered, candidate)) return(TRUE)
+  reg <- parse_redirect_uri(registered)
+  cand <- parse_redirect_uri(candidate)
+  if (is.null(reg) || is.null(cand)) return(FALSE)
+  if (!identical(reg$scheme, cand$scheme)) return(FALSE)
+  if (!identical(reg$host, cand$host)) return(FALSE)
+  if (!identical(reg$path, cand$path)) return(FALSE)
+  loopback_hosts <- c("localhost", "127.0.0.1", "[::1]")
+  if (!(tolower(reg$host) %in% loopback_hosts)) return(FALSE)
+  # Loopback: ports may differ.
+  TRUE
+}
+
+# Minimal scheme/host/port/path split — RFC 3986 enough for the
+# loopback comparison we need.
+parse_redirect_uri <- function(uri) {
+  m <- regmatches(uri, regexec(
+    "^([a-zA-Z][a-zA-Z0-9+.-]*)://(\\[[^]]+\\]|[^:/?#]+)(?::([0-9]+))?(/[^?#]*)?",
+    uri))[[1L]]
+  if (length(m) < 5L) return(NULL)
+  list(scheme = tolower(m[[2L]]),
+       host   = m[[3L]],
+       port   = if (nzchar(m[[4L]])) m[[4L]] else NA_character_,
+       path   = if (nzchar(m[[5L]])) m[[5L]] else "/")
 }
 
 # In-memory key/value store interface ------------------------------------
@@ -143,13 +203,17 @@ oauth_as_metadata_handler <- function(cfg) {
       authorization_endpoint = paste0(cfg$issuer, "/authorize"),
       token_endpoint = paste0(cfg$issuer, "/token"),
       registration_endpoint = paste0(cfg$issuer, "/register"),
+      revocation_endpoint = paste0(cfg$issuer, "/revoke"),
       jwks_uri = paste0(cfg$issuer, "/jwks"),
       scopes_supported = I(cfg$scopes_supported),
       response_types_supported = I("code"),
       grant_types_supported = I(c("authorization_code",
                                   "refresh_token")),
       code_challenge_methods_supported = I("S256"),
-      token_endpoint_auth_methods_supported = I("none")
+      token_endpoint_auth_methods_supported = I(
+        c("none", "client_secret_basic", "client_secret_post")),
+      revocation_endpoint_auth_methods_supported = I(
+        c("none", "client_secret_basic", "client_secret_post"))
     ), auto_unbox = TRUE, force = TRUE)
     http_make_response(200L, body = body, json = TRUE)
   }
@@ -211,6 +275,112 @@ req_json_body <- function(req) {
   out %||% list()
 }
 
+# Client authentication --------------------------------------------------
+
+# Generate a random URL-safe secret for confidential clients.
+oauth_generate_secret <- function() {
+  raw <- openssl::rand_bytes(32L)
+  hex <- paste(format(raw), collapse = "")
+  hex
+}
+
+# Hash a client_secret with a per-client salt. SHA-256 + 32-byte
+# random salt is appropriate for the demo-grade in-memory AS we
+# ship (the AS is documented as "not for production").
+oauth_hash_secret <- function(secret, salt = NULL) {
+  if (is.null(salt)) {
+    salt <- paste(format(openssl::rand_bytes(16L)), collapse = "")
+  }
+  combined <- charToRaw(paste0(salt, ":", secret))
+  digest <- paste(format(openssl::sha256(combined)), collapse = "")
+  list(salt = salt, digest = digest)
+}
+
+oauth_verify_secret <- function(secret, hashed) {
+  if (is.null(hashed) || is.null(hashed$salt) || is.null(hashed$digest)) {
+    return(FALSE)
+  }
+  candidate <- oauth_hash_secret(secret, salt = hashed$salt)
+  identical(candidate$digest, hashed$digest)
+}
+
+# Authenticate the requesting OAuth client on /token, /revoke, etc.
+# Supports:
+#   - Authorization: Basic <b64 client_id:client_secret> (client_secret_basic)
+#   - body params  client_id + client_secret              (client_secret_post)
+#   - public clients (token_endpoint_auth_method = "none")  — only client_id required
+# Returns list(ok = TRUE, client = <record>) or list(ok = FALSE, response = <http response>).
+oauth_authenticate_client <- function(cfg, req, params) {
+  # Try Authorization: Basic first.
+  authz <- header_get(req$headers, "Authorization")
+  if (!is.null(authz) &&
+      grepl("^Basic\\s+", authz, ignore.case = TRUE)) {
+    b64 <- sub("^Basic\\s+", "", authz, ignore.case = TRUE)
+    decoded <- tryCatch(
+      rawToChar(jsonlite::base64_dec(b64)),
+      error = function(e) NULL)
+    if (is.null(decoded) || !grepl(":", decoded, fixed = TRUE)) {
+      return(oauth_client_auth_failure("invalid Authorization header"))
+    }
+    cid <- sub(":.*$", "", decoded)
+    csec <- sub("^[^:]*:", "", decoded)
+    client <- cfg$client_store$get(cid)
+    if (is.null(client)) {
+      return(oauth_client_auth_failure("unknown client_id"))
+    }
+    if (!identical(client$token_endpoint_auth_method,
+                   "client_secret_basic")) {
+      return(oauth_client_auth_failure(
+        "client did not register client_secret_basic"))
+    }
+    if (!oauth_verify_secret(csec, client$client_secret_hash)) {
+      return(oauth_client_auth_failure("invalid client_secret"))
+    }
+    return(list(ok = TRUE, client = client))
+  }
+  cid <- unname(params["client_id"])
+  if (is.na(cid) || !nzchar(cid)) {
+    return(oauth_client_auth_failure("client_id is required"))
+  }
+  client <- cfg$client_store$get(cid)
+  if (is.null(client)) {
+    return(oauth_client_auth_failure("unknown client_id"))
+  }
+  method <- client$token_endpoint_auth_method %||% "none"
+  if (identical(method, "none")) {
+    return(list(ok = TRUE, client = client))
+  }
+  if (identical(method, "client_secret_post")) {
+    csec <- unname(params["client_secret"])
+    if (is.na(csec) || !nzchar(csec)) {
+      return(oauth_client_auth_failure(
+        "client_secret_post requires client_secret in the request body"))
+    }
+    if (!oauth_verify_secret(csec, client$client_secret_hash)) {
+      return(oauth_client_auth_failure("invalid client_secret"))
+    }
+    return(list(ok = TRUE, client = client))
+  }
+  # method is client_secret_basic but no Authorization header — RFC
+  # 6749 §2.3.1 lets servers also accept POST body params for
+  # client_secret_basic clients. We accept that gracefully.
+  csec <- unname(params["client_secret"])
+  if (!is.na(csec) && nzchar(csec) &&
+      oauth_verify_secret(csec, client$client_secret_hash)) {
+    return(list(ok = TRUE, client = client))
+  }
+  oauth_client_auth_failure(
+    "client must authenticate via Authorization: Basic header")
+}
+
+oauth_client_auth_failure <- function(desc) {
+  body <- jsonlite::toJSON(list(
+    error = "invalid_client",
+    error_description = desc), auto_unbox = TRUE)
+  list(ok = FALSE,
+       response = http_make_response(401L, body = body, json = TRUE))
+}
+
 # Token / code helpers ---------------------------------------------------
 
 # Mint an RS256 JWT for the given claims. `extra` overrides defaults.
@@ -265,7 +435,10 @@ oauth_as_authorize_handler <- function(cfg) {
     if (is.na(redirect_uri) || !nzchar(redirect_uri)) {
       return(err("invalid_request", "redirect_uri is required"))
     }
-    if (!redirect_uri %in% client$redirect_uris) {
+    matched <- any(vapply(client$redirect_uris,
+      function(r) oauth_redirect_uri_matches(r, redirect_uri),
+      logical(1L)))
+    if (!matched) {
       return(err("invalid_request",
                  "redirect_uri not registered for this client"))
     }
@@ -357,15 +530,21 @@ oauth_as_token_handler <- function(cfg) {
     }
     gt <- unname(p["grant_type"])
     if (is.na(gt)) return(err("invalid_request", "grant_type missing"))
+    if (!(gt %in% c("authorization_code", "refresh_token"))) {
+      return(err("unsupported_grant_type",
+                 sprintf("grant_type '%s' not supported", gt)))
+    }
+    auth <- oauth_authenticate_client(cfg, req, p)
+    if (!isTRUE(auth$ok)) return(auth$response)
     if (identical(gt, "authorization_code")) {
       code <- unname(p["code"])
       verifier <- unname(p["code_verifier"])
-      client_id <- unname(p["client_id"])
+      client_id <- auth$client$client_id
       redirect_uri <- unname(p["redirect_uri"])
       if (is.na(code) || is.na(verifier) ||
-          is.na(client_id) || is.na(redirect_uri)) {
+          is.na(redirect_uri)) {
         return(err("invalid_request",
-                   "missing code, code_verifier, client_id, or redirect_uri"))
+                   "missing code, code_verifier, or redirect_uri"))
       }
       stored <- cfg$code_store$get(code)
       if (is.null(stored)) {
@@ -433,6 +612,7 @@ oauth_as_token_handler <- function(cfg) {
         auto_unbox = TRUE)
       return(http_make_response(200L, body = body, json = TRUE))
     }
+    # Unreachable — gt was validated above.
     err("unsupported_grant_type",
         sprintf("grant_type '%s' not supported", gt))
   }
@@ -454,6 +634,13 @@ oauth_as_register_handler <- function(cfg) {
       return(err("invalid_redirect_uri",
                  "redirect_uris is required"))
     }
+    method <- as.character(body$token_endpoint_auth_method %||% "none")
+    if (!(method %in% c("none", "client_secret_basic",
+                        "client_secret_post"))) {
+      return(err("invalid_client_metadata",
+                 sprintf("unsupported token_endpoint_auth_method '%s'",
+                         method)))
+    }
     client_id <- new_uuid()
     client_name <- as.character(body$client_name %||% client_id)
     issued_at <- as.integer(Sys.time())
@@ -465,12 +652,47 @@ oauth_as_register_handler <- function(cfg) {
         body$grant_types %||% c("authorization_code", "refresh_token"))),
       response_types = as.character(unlist(
         body$response_types %||% c("code"))),
-      token_endpoint_auth_method = "none",
+      token_endpoint_auth_method = method,
       client_id_issued_at = issued_at)
+    # Mint a client_secret for confidential clients. Store only the
+    # hash; surface the cleartext once in the registration response.
+    response_payload <- record
+    if (!identical(method, "none")) {
+      secret <- oauth_generate_secret()
+      record$client_secret_hash <- oauth_hash_secret(secret)
+      response_payload$client_secret <- secret
+    }
     cfg$client_store$add(client_id, record)
-    payload <- jsonlite::toJSON(record, auto_unbox = TRUE,
+    payload <- jsonlite::toJSON(response_payload, auto_unbox = TRUE,
                                 force = TRUE)
     http_make_response(201L, body = payload, json = TRUE)
+  }
+}
+
+# /revoke handler (RFC 7009) --------------------------------------------
+
+# Revokes the supplied token if it exists. Per RFC 7009 §2.2, the
+# response is 200 OK whether or not the token was known — clients
+# must not be able to probe for token existence. The client is
+# authenticated the same way as on /token.
+oauth_as_revoke_handler <- function(cfg) {
+  function(req) {
+    p <- req_form_params(req)
+    err <- function(code, desc = NULL, status = 400L) {
+      body <- jsonlite::toJSON(drop_nulls(list(
+        error = code, error_description = desc)),
+        auto_unbox = TRUE)
+      http_make_response(status, body = body, json = TRUE)
+    }
+    token <- unname(p["token"])
+    if (is.na(token) || !nzchar(token)) {
+      return(err("invalid_request", "token parameter is required"))
+    }
+    auth <- oauth_authenticate_client(cfg, req, p)
+    if (!isTRUE(auth$ok)) return(auth$response)
+    # token_type_hint is advisory — we just look up by id either way.
+    cfg$token_store$revoke(token)
+    http_make_response(200L, body = "", json = TRUE)
   }
 }
 

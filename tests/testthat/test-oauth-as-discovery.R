@@ -26,7 +26,7 @@ test_that("metadata exposes the five required endpoints", {
   expect_equal(body$jwks_uri, "https://as.example/jwks")
 })
 
-test_that("metadata advertises PKCE-S256, code, and pub-client auth", {
+test_that("metadata advertises PKCE-S256, code, and all three client-auth methods", {
   cfg <- new_test_as()
   resp <- mcpserver:::oauth_as_metadata_handler(cfg)(list())
   body <- decode(resp)
@@ -34,8 +34,17 @@ test_that("metadata advertises PKCE-S256, code, and pub-client auth", {
   expect_setequal(unlist(body$grant_types_supported),
                   c("authorization_code", "refresh_token"))
   expect_equal(unlist(body$code_challenge_methods_supported), "S256")
-  expect_equal(unlist(body$token_endpoint_auth_methods_supported),
-               "none")
+  expect_setequal(unlist(body$token_endpoint_auth_methods_supported),
+                  c("none", "client_secret_basic", "client_secret_post"))
+})
+
+test_that("metadata exposes revocation_endpoint + matching auth methods", {
+  cfg <- new_test_as()
+  resp <- mcpserver:::oauth_as_metadata_handler(cfg)(list())
+  body <- decode(resp)
+  expect_equal(body$revocation_endpoint, "https://as.example/revoke")
+  expect_setequal(unlist(body$revocation_endpoint_auth_methods_supported),
+                  c("none", "client_secret_basic", "client_secret_post"))
 })
 
 test_that("metadata reflects the configured scopes_supported", {

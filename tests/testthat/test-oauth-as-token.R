@@ -106,9 +106,10 @@ test_that("redirect_uri mismatch is rejected", {
   expect_equal(body$error, "invalid_grant")
 })
 
-test_that("missing required fields are rejected as invalid_request", {
+test_that("missing required fields after auth are rejected as invalid_request", {
   cfg <- setup_cfg()
-  resp <- call_token(cfg, list(grant_type = "authorization_code"))
+  resp <- call_token(cfg, list(grant_type = "authorization_code",
+                               client_id = "c-1"))
   expect_equal(resp$status, 400L)
   body <- jsonlite::fromJSON(resp$body, simplifyVector = FALSE)
   expect_equal(body$error, "invalid_request")
@@ -128,6 +129,7 @@ test_that("refresh_token grant mints a fresh access token", {
   first_body <- jsonlite::fromJSON(first$body, simplifyVector = FALSE)
   refreshed <- call_token(cfg, list(
     grant_type = "refresh_token",
+    client_id = "c-1",
     refresh_token = first_body$refresh_token))
   expect_equal(refreshed$status, 200L)
   body <- jsonlite::fromJSON(refreshed$body, simplifyVector = FALSE)
@@ -139,6 +141,7 @@ test_that("refresh_token rejects unknown tokens", {
   cfg <- setup_cfg()
   resp <- call_token(cfg, list(
     grant_type = "refresh_token",
+    client_id = "c-1",
     refresh_token = "not-a-real-token"))
   expect_equal(resp$status, 400L)
   body <- jsonlite::fromJSON(resp$body, simplifyVector = FALSE)
