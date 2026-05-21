@@ -9,5 +9,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/conformance": "^0.1.16"
   }
 }

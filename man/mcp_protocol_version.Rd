@@ -10,10 +10,9 @@ mcp_protocol_version()
 A scalar character vector.
 }
 \description{
-The Model Context Protocol revision implemented by this package. Servers
-advertise this string in their \code{initialize} response, and the HTTP
-transport rejects requests carrying a different \code{MCP-Protocol-Version}
-header.
+Returns the \emph{latest} MCP revision implemented by this package. Servers
+advertise this string in their \code{initialize} response when the client
+requests an unknown revision.
 }
 \examples{
 mcp_protocol_version()

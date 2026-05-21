@@ -87,15 +87,46 @@ validate_origin <- function(state, req) {
   if (is.null(origin) || identical(origin, "")) {
     return(!state$require_origin)
   }
-  any(vapply(state$allowed_origins, function(prefix) {
-    startsWith(origin, prefix)
-  }, logical(1L)))
+  # Exact equality against allowed_origins is the spec-recommended check.
+  # `startsWith` would let "http://localhost.evil.com" pass when
+  # "http://localhost" is on the allow-list.
+  origin %in% state$allowed_origins
+}
+
+# Reject requests whose Host header doesn't match the server's configured
+# bind address — a complementary DNS-rebinding defense alongside Origin.
+validate_host <- function(state, req) {
+  if (is.null(state$allowed_hosts) || length(state$allowed_hosts) == 0L) {
+    return(TRUE)
+  }
+  host <- header_get(req$headers, "Host")
+  if (is.null(host)) return(FALSE)
+  # Allow either bare host or host:port.
+  bare <- sub(":.*$", "", host)
+  host %in% state$allowed_hosts || bare %in% state$allowed_hosts
 }
 
 check_protocol_version <- function(req) {
   v <- header_get(req$headers, "MCP-Protocol-Version")
   if (is.null(v)) return(TRUE)
-  identical(v, mcp_protocol_version())
+  v %in% mcp_supported_protocol_versions()
+}
+
+# Accept header must list both application/json and text/event-stream
+# per the Streamable HTTP spec; clients can satisfy this with */* as well.
+check_accept <- function(req) {
+  accept <- header_get(req$headers, "Accept")
+  if (is.null(accept) || identical(accept, "")) return(TRUE)
+  if (grepl("\\*/\\*", accept, fixed = FALSE)) return(TRUE)
+  has_json <- grepl("application/json", accept, fixed = TRUE)
+  has_sse <- grepl("text/event-stream", accept, fixed = TRUE)
+  has_json && has_sse
+}
+
+check_content_type <- function(req) {
+  ct <- header_get(req$headers, "Content-Type")
+  if (is.null(ct) || identical(ct, "")) return(TRUE)
+  grepl("^application/json(;|$)", ct, perl = TRUE)
 }
 
 http_make_response <- function(status, body = NULL,
@@ -110,53 +141,132 @@ http_make_response <- function(status, body = NULL,
   out
 }
 
-http_unauthorized <- function(state) {
-  www <- if (!is.null(state$auth)) {
-    sprintf('Bearer realm="%s", resource_metadata="%s"',
-            state$auth$audience,
-            sub("/+$", "", state$auth$issuer))
-  } else "Bearer"
-  http_make_response(401L, body = '{"error":"unauthorized"}',
-                     headers = c("WWW-Authenticate" = www,
-                                 "Content-Type" = "application/json"))
+# Build a JSON-RPC error envelope as the response body for transport-level
+# failures (bad Origin, bad Accept, malformed JSON, etc.). Matches the
+# TypeScript SDK's createJsonErrorResponse() semantics.
+http_jsonrpc_error <- function(status, code, message,
+                               headers = NULL) {
+  body <- jrpc_encode(list(jsonrpc = JSONRPC_VERSION, id = NULL,
+                           error = list(code = as.integer(code),
+                                        message = as.character(message))))
+  http_make_response(status, body = body, headers = headers, json = TRUE)
+}
+
+# RFC 6750-compliant WWW-Authenticate challenge.
+www_authenticate_challenge <- function(state,
+                                       error = NULL,
+                                       description = NULL,
+                                       scope = NULL) {
+  if (is.null(state$auth)) return("Bearer")
+  parts <- c(sprintf('realm="%s"', state$auth$audience),
+             sprintf('resource_metadata="%s"',
+                     sub("/+$", "", state$auth$issuer)))
+  if (!is.null(error)) {
+    parts <- c(parts, sprintf('error="%s"', error))
+  }
+  if (!is.null(description)) {
+    parts <- c(parts, sprintf('error_description="%s"',
+                              gsub('"', "'", description, fixed = TRUE)))
+  }
+  if (!is.null(scope) && length(scope) > 0L) {
+    parts <- c(parts, sprintf('scope="%s"', paste(scope, collapse = " ")))
+  }
+  paste("Bearer", paste(parts, collapse = ", "))
+}
+
+http_unauthorized <- function(state, status = 401L,
+                              error = "invalid_token",
+                              description = "Bearer token missing, malformed, or expired") {
+  challenge <- www_authenticate_challenge(state, error = error,
+                                          description = description)
+  http_make_response(status,
+    body = jrpc_encode(list(jsonrpc = JSONRPC_VERSION, id = NULL,
+                            error = list(code = -32001L,
+                                         message = description))),
+    headers = c("WWW-Authenticate" = challenge,
+                "Content-Type" = "application/json"))
+}
+
+http_forbidden <- function(state, scope = NULL) {
+  challenge <- www_authenticate_challenge(state,
+    error = "insufficient_scope",
+    description = "Insufficient scope for requested operation",
+    scope = scope)
+  http_make_response(403L,
+    body = jrpc_encode(list(jsonrpc = JSONRPC_VERSION, id = NULL,
+                            error = list(code = -32002L,
+                                         message = "insufficient scope"))),
+    headers = c("WWW-Authenticate" = challenge,
+                "Content-Type" = "application/json"))
 }
 
 post_authenticate <- function(state, req) {
   if (is.null(state$auth)) {
-    return(list(ok = TRUE, subject = NULL, scopes = character(0L)))
+    return(list(ok = TRUE, subject = NULL, scopes = character(0L),
+                reason = "ok"))
   }
   authz <- header_get(req$headers, "Authorization")
-  oauth_verify_bearer(state$auth, authz)
+  res <- oauth_verify_bearer(state$auth, authz)
+  # Distinguish "no/bad token" from "insufficient scope" so the HTTP
+  # layer can pick 401 vs 403 per RFC 6750.
+  if (isTRUE(res$ok)) return(res)
+  reason <- if (is.null(authz) || !nzchar(authz)) {
+    "invalid_token"
+  } else if (!is.null(res$reason)) {
+    res$reason
+  } else {
+    "invalid_token"
+  }
+  list(ok = FALSE, reason = reason)
 }
 
 http_post_handler <- function(state) {
   function(req) {
     if (!validate_origin(state, req)) {
-      return(http_make_response(403L, body = '{"error":"bad origin"}',
-                                json = TRUE))
+      return(http_jsonrpc_error(403L, -32603, "bad origin"))
+    }
+    if (!validate_host(state, req)) {
+      return(http_jsonrpc_error(403L, -32603, "bad host"))
     }
     if (!check_protocol_version(req)) {
-      return(http_make_response(400L,
-        body = '{"error":"unsupported MCP-Protocol-Version"}',
-        json = TRUE))
+      return(http_jsonrpc_error(400L, -32602,
+        "unsupported MCP-Protocol-Version"))
+    }
+    if (!check_accept(req)) {
+      return(http_jsonrpc_error(406L, -32602,
+        "Accept must include application/json and text/event-stream"))
+    }
+    if (!check_content_type(req)) {
+      return(http_jsonrpc_error(415L, -32602,
+        "Content-Type must be application/json"))
     }
     auth_res <- post_authenticate(state, req)
-    if (!isTRUE(auth_res$ok)) return(http_unauthorized(state))
+    if (!isTRUE(auth_res$ok)) {
+      if (identical(auth_res$reason, "insufficient_scope")) {
+        return(http_forbidden(state,
+                              scope = state$auth$required_scopes))
+      }
+      return(http_unauthorized(state))
+    }
 
     body_text <- if (is.null(req$body)) "" else rawToChar(req$body)
     msg <- jrpc_decode(body_text)
     if (is.null(msg)) {
-      return(http_make_response(400L,
-        body = jrpc_encode(jrpc_error(NULL, jrpc_codes$parse_error,
-                                      "parse error")),
-        json = TRUE))
+      return(http_jsonrpc_error(400L, jrpc_codes$parse_error,
+                                "parse error"))
     }
 
     is_init <- isTRUE(is.list(msg) && identical(msg$method, "initialize"))
     session_id <- header_get(req$headers, "Mcp-Session-Id")
 
     if (is_init) {
-      # Always create a fresh session on initialize.
+      # Reject re-initialization on an already-active session.
+      if (!is.null(session_id) &&
+          exists(session_id, envir = state$server$sessions,
+                 inherits = FALSE)) {
+        return(http_jsonrpc_error(400L, jrpc_codes$invalid_request,
+          "Server already initialized for this session"))
+      }
       session_id <- new_uuid()
       session <- new_http_session(state, session_id, auth_res)
       assign(session_id, session, envir = state$server$sessions)

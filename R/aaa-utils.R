@@ -8,16 +8,43 @@ NULL
 
 #' MCP Protocol Version
 #'
-#' The Model Context Protocol revision implemented by this package. Servers
-#' advertise this string in their `initialize` response, and the HTTP
-#' transport rejects requests carrying a different `MCP-Protocol-Version`
-#' header.
+#' Returns the *latest* MCP revision implemented by this package. Servers
+#' advertise this string in their `initialize` response when the client
+#' requests an unknown revision.
 #'
 #' @return A scalar character vector.
 #' @export
 #' @examples
 #' mcp_protocol_version()
 mcp_protocol_version <- function() "2025-06-18"
+
+#' MCP protocol revisions accepted by this server
+#'
+#' Ordered newest to oldest. The HTTP transport accepts an incoming
+#' `MCP-Protocol-Version` header that matches any of these.
+#'
+#' @return A character vector.
+#' @export
+#' @examples
+#' mcp_supported_protocol_versions()
+mcp_supported_protocol_versions <- function() {
+  c("2025-06-18", "2025-03-26", "2024-11-05")
+}
+
+#' Negotiate the protocol version with an initializing client.
+#'
+#' @param requested The `protocolVersion` field from the client's
+#'   `initialize` request, or `NULL` if absent.
+#' @return The version string the server should respond with.
+#' @export
+#' @examples
+#' negotiate_protocol_version("2024-11-05")
+#' negotiate_protocol_version("2099-01-01")
+negotiate_protocol_version <- function(requested) {
+  supported <- mcp_supported_protocol_versions()
+  if (!is.null(requested) && requested %in% supported) requested
+  else supported[[1L]]
+}
 
 JSONRPC_VERSION <- "2.0"
 

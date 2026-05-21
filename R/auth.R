@@ -105,35 +105,42 @@ oauth_verify_bearer <- function(cfg, authz) {
 
 oauth_verify_jwt <- function(cfg, token) {
   parts <- strsplit(token, ".", fixed = TRUE)[[1L]]
-  if (length(parts) != 3L) return(list(ok = FALSE))
+  if (length(parts) != 3L) {
+    return(list(ok = FALSE, reason = "invalid_token"))
+  }
   header <- safely(jsonlite::fromJSON(
     rawToChar(jose::base64url_decode(parts[[1L]])),
     simplifyVector = FALSE), log = FALSE)
-  if (is.null(header)) return(list(ok = FALSE))
+  if (is.null(header)) return(list(ok = FALSE, reason = "invalid_token"))
   jwk <- oauth_find_jwk(cfg, header$kid)
-  if (is.null(jwk)) return(list(ok = FALSE))
+  if (is.null(jwk)) return(list(ok = FALSE, reason = "invalid_token"))
   pub <- safely(jose::read_jwk(jsonlite::toJSON(jwk, auto_unbox = TRUE)),
                 log = FALSE)
-  if (is.null(pub)) return(list(ok = FALSE))
+  if (is.null(pub)) return(list(ok = FALSE, reason = "invalid_token"))
   decoded <- safely(jose::jwt_decode_sig(token, pubkey = pub), log = FALSE)
-  if (is.null(decoded)) return(list(ok = FALSE))
+  if (is.null(decoded)) {
+    return(list(ok = FALSE, reason = "invalid_token"))
+  }
   now <- as.numeric(Sys.time())
-  if (!identical(decoded$iss, cfg$issuer)) return(list(ok = FALSE))
+  if (!identical(decoded$iss, cfg$issuer)) {
+    return(list(ok = FALSE, reason = "invalid_token"))
+  }
   if (!isTRUE(claim_contains(decoded$aud, cfg$audience))) {
-    return(list(ok = FALSE))
+    return(list(ok = FALSE, reason = "invalid_token"))
   }
   if (!is.null(decoded$exp) &&
       now > as.numeric(decoded$exp) + cfg$leeway) {
-    return(list(ok = FALSE))
+    return(list(ok = FALSE, reason = "invalid_token"))
   }
   if (!is.null(decoded$nbf) &&
       now < as.numeric(decoded$nbf) - cfg$leeway) {
-    return(list(ok = FALSE))
+    return(list(ok = FALSE, reason = "invalid_token"))
   }
   scopes <- parse_scope(decoded$scope, decoded$scp)
   if (length(cfg$required_scopes) > 0L &&
       !all(cfg$required_scopes %in% scopes)) {
-    return(list(ok = FALSE))
+    return(list(ok = FALSE, reason = "insufficient_scope",
+                scopes = scopes))
   }
   list(ok = TRUE,
        subject = decoded$sub,

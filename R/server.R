@@ -22,6 +22,11 @@ McpServer <- R6::R6Class(
     # everything-demo) stash their timer/toggle state here so the
     # core package keeps no reference to it.
     extension_state = NULL,
+    # User-registered custom request / notification handlers.
+    custom_request_handlers = NULL,
+    custom_notification_handlers = NULL,
+    fallback_request_handler = NULL,
+    fallback_notification_handler = NULL,
 
     initialize = function(name, title, version, instructions,
                           capabilities) {
@@ -65,12 +70,30 @@ McpServer <- R6::R6Class(
 
     capabilities = function() {
       caps <- list()
-      caps$tools <- list(listChanged = TRUE)
-      caps$resources <- list(listChanged = TRUE, subscribe = TRUE)
-      caps$prompts <- list(listChanged = TRUE)
+      # Only advertise the kinds we actually have something registered
+      # for. Over-advertising lets clients call methods that then
+      # return MethodNotFound — see TS server/mcp.js for the same rule.
+      if (length(ls(self$tools, all.names = TRUE)) > 0L) {
+        caps$tools <- list(listChanged = TRUE)
+      }
+      if (length(ls(self$resources, all.names = TRUE)) > 0L ||
+          length(ls(self$resource_templates, all.names = TRUE)) > 0L) {
+        caps$resources <- list(listChanged = TRUE, subscribe = TRUE)
+      }
+      if (length(ls(self$prompts, all.names = TRUE)) > 0L) {
+        caps$prompts <- list(listChanged = TRUE)
+        # Completions are only useful when a prompt declares them.
+        for (n in ls(self$prompts, all.names = TRUE)) {
+          p <- get(n, envir = self$prompts, inherits = FALSE)
+          if (!is.null(p$complete) && length(p$complete) > 0L) {
+            caps$completions <- j_empty_obj()
+            break
+          }
+        }
+      }
+      # Logging is always available — send_log gates by session level.
       caps$logging <- j_empty_obj()
-      caps$completions <- j_empty_obj()
-      # User overrides (e.g. tasks experimental capability)
+      # User-supplied capability declarations win.
       for (k in names(self$declared_capabilities %||% list())) {
         caps[[k]] <- self$declared_capabilities[[k]]
       }

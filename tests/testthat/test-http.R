@@ -77,7 +77,7 @@ test_that("HTTP transport handles initialize / list / call / DELETE", {
     httr2::req_method("POST") |>
     httr2::req_headers(Origin = "http://127.0.0.1",
                        `Content-Type` = "application/json",
-                       Accept = "application/json") |>
+                       Accept = "application/json, text/event-stream") |>
     httr2::req_body_raw(charToRaw(
       '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}')) |>
     httr2::req_perform()

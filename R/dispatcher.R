@@ -18,6 +18,12 @@ sync_handlers <- function() list(
     handle_logging_set_level(server, session, params, msg)
   },
   "tasks/list"                  = handle_tasks_list,
+  "tasks/get"                   = function(server, session, params, msg) {
+    handle_tasks_get(server, session, params, msg)
+  },
+  "tasks/result"                = function(server, session, params, msg) {
+    handle_tasks_result(server, session, params, msg)
+  },
   "tasks/cancel"                = function(server, session, params, msg) {
     handle_tasks_cancel(server, session, params, msg)
   }
@@ -48,11 +54,12 @@ notification_handlers <- function() list(
 # initialize / ping handlers ----------------------------------------------
 
 handle_initialize <- function(server, session, params, msg = NULL) {
-  session$protocol_version <- params$protocolVersion %||% mcp_protocol_version()
+  negotiated <- negotiate_protocol_version(params$protocolVersion)
+  session$protocol_version <- negotiated
   session$client_capabilities <- params$capabilities %||% list()
   session$client_info <- params$clientInfo %||% list()
   drop_nulls(list(
-    protocolVersion = mcp_protocol_version(),
+    protocolVersion = negotiated,
     capabilities = server$capabilities(),
     serverInfo = server$server_info(),
     instructions = server$instructions
@@ -108,6 +115,34 @@ route_message <- function(server, session, msg) {
         marker$.id <- msg$id
         return(marker)
       }
+      # User-registered custom request handler.
+      if (!is.null(server$custom_request_handlers) &&
+          exists(method, envir = server$custom_request_handlers,
+                 inherits = FALSE)) {
+        h <- get(method, envir = server$custom_request_handlers,
+                 inherits = FALSE)
+        res <- tryCatch(h(server, session, msg$params %||% list(), msg),
+                        error = function(e) jrpc_error(msg$id,
+                          jrpc_codes$internal_error,
+                          conditionMessage(e)))
+        if (is.list(res) && "code" %in% names(res$error %||% list())) {
+          return(res)
+        }
+        return(jrpc_response(msg$id, res))
+      }
+      # Fallback request handler.
+      if (!is.null(server$fallback_request_handler)) {
+        res <- tryCatch(server$fallback_request_handler(server, session,
+                                                        msg$params %||% list(),
+                                                        msg),
+                        error = function(e) jrpc_error(msg$id,
+                          jrpc_codes$internal_error,
+                          conditionMessage(e)))
+        if (is.list(res) && "code" %in% names(res$error %||% list())) {
+          return(res)
+        }
+        return(jrpc_response(msg$id, res))
+      }
       jrpc_error(msg$id, jrpc_codes$method_not_found,
                  sprintf("method not found: %s", method))
     },
@@ -117,6 +152,17 @@ route_message <- function(server, session, msg) {
       if (method %in% names(notif)) {
         safely(notif[[method]](server, session, msg$params %||% list()),
                log = TRUE)
+      } else if (!is.null(server$custom_notification_handlers) &&
+                 exists(method,
+                        envir = server$custom_notification_handlers,
+                        inherits = FALSE)) {
+        h <- get(method,
+                 envir = server$custom_notification_handlers,
+                 inherits = FALSE)
+        safely(h(server, session, msg$params %||% list()), log = TRUE)
+      } else if (!is.null(server$fallback_notification_handler)) {
+        safely(server$fallback_notification_handler(server, session,
+          msg$params %||% list()), log = TRUE)
       }
       NULL
     },

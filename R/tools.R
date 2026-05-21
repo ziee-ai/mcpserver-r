@@ -46,6 +46,12 @@ new_tool <- function(name,
                      bidirectional = FALSE) {
   stopifnot(is.character(name), length(name) == 1L)
   stopifnot(is.function(handler))
+  # SEP-986: tool names must match ^[A-Za-z0-9_./-]+$ and be 1-64 chars.
+  if (!grepl("^[A-Za-z0-9_./-]+$", name) || nchar(name) > 64L) {
+    stop(sprintf(
+      "tool name '%s' violates SEP-986 (allowed: A-Z a-z 0-9 _ . / - ; max 64 chars)",
+      name))
+  }
   out <- list(
     name = name,
     description = as.character(description),
