@@ -127,6 +127,14 @@ validate_elicit_field <- function(name, schema, value) {
                 sprintf("'%s' longer than maxLength %d",
                         name, schema$maxLength))
   }
+  # JSON Schema `pattern`: ECMA-262 regex constraint on string values.
+  if (!is.null(schema$pattern) && is.character(value)) {
+    if (!all(grepl(schema$pattern, value, perl = TRUE))) {
+      errors <- c(errors,
+                  sprintf("'%s' does not match pattern '%s'",
+                          name, schema$pattern))
+    }
+  }
   # SEP-1330 enum shapes.
   if (!is.null(schema$enum)) {
     allowed <- as.character(unlist(schema$enum))

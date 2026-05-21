@@ -176,7 +176,13 @@ handle_tools_call <- function(server, session, params, msg) {
 # Post-handler conversion of a raw user return into the MCP result shape.
 finalize_tool_result <- function(tool, value) {
   norm <- normalize_tool_result(value)
-  if (!is.null(tool$output_schema) && !is.null(norm$structuredContent)) {
+  # Per MCP spec: when isError is TRUE the response carries an error
+  # message in `content`, and `structuredContent` is intentionally
+  # unrelated to the declared output_schema. Skip schema validation
+  # in that case to avoid double-faulting.
+  if (!isTRUE(norm$isError) &&
+      !is.null(tool$output_schema) &&
+      !is.null(norm$structuredContent)) {
     v <- validate_args(tool$output_schema, norm$structuredContent)
     if (!v$ok) {
       return(list(content = list(response_text(

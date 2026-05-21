@@ -198,7 +198,12 @@ oauth_as_jwks_json <- function(cfg) {
 
 oauth_as_metadata_handler <- function(cfg) {
   function(req) {
-    body <- jsonlite::toJSON(list(
+    oauth_with_cors(oauth_as_metadata_impl(cfg))
+  }
+}
+
+oauth_as_metadata_impl <- function(cfg) {
+  body <- jsonlite::toJSON(list(
       issuer = cfg$issuer,
       authorization_endpoint = paste0(cfg$issuer, "/authorize"),
       token_endpoint = paste0(cfg$issuer, "/token"),
@@ -215,16 +220,16 @@ oauth_as_metadata_handler <- function(cfg) {
       revocation_endpoint_auth_methods_supported = I(
         c("none", "client_secret_basic", "client_secret_post"))
     ), auto_unbox = TRUE, force = TRUE)
-    http_make_response(200L, body = body, json = TRUE)
-  }
+  http_make_response(200L, body = body, json = TRUE)
 }
 
 # JWKS handler -----------------------------------------------------------
 
 oauth_as_jwks_handler <- function(cfg) {
   function(req) {
-    http_make_response(200L, body = oauth_as_jwks_json(cfg),
-                       json = TRUE)
+    oauth_with_cors(http_make_response(200L,
+                                       body = oauth_as_jwks_json(cfg),
+                                       json = TRUE))
   }
 }
 
@@ -404,13 +409,18 @@ oauth_as_mint_jwt <- function(cfg, claims, ttl, kind = "access") {
 
 oauth_as_authorize_handler <- function(cfg) {
   function(req) {
-    q <- parse_query_string(uri_query_part(req$uri))
-    err <- function(code, desc, status = 400L) {
-      body <- jsonlite::toJSON(list(error = code,
-                                    error_description = desc),
-                               auto_unbox = TRUE)
-      http_make_response(status, body = body, json = TRUE)
-    }
+    oauth_with_cors(oauth_as_authorize_impl(cfg, req))
+  }
+}
+
+oauth_as_authorize_impl <- function(cfg, req) {
+  q <- parse_query_string(uri_query_part(req$uri))
+  err <- function(code, desc, status = 400L) {
+    body <- jsonlite::toJSON(list(error = code,
+                                  error_description = desc),
+                             auto_unbox = TRUE)
+    http_make_response(status, body = body, json = TRUE)
+  }
     if (!identical(unname(q["response_type"]), "code")) {
       return(err("unsupported_response_type",
                  "response_type must be 'code'"))
@@ -505,7 +515,22 @@ oauth_as_authorize_handler <- function(cfg) {
                   "Cache-Control" = "no-store",
                   "Content-Type" = "text/plain"),
       body = "redirecting")
-  }
+}
+
+# Attach permissive CORS headers to an OAuth-AS response. Spec-aligned
+# allow-list: GET/POST + standard auth headers + 24-hour preflight
+# cache. Real deployments should narrow Allow-Origin; the demo-grade
+# AS defaults to "*" to keep browser SPAs working.
+oauth_with_cors <- function(resp) {
+  cors <- c(
+    "Access-Control-Allow-Origin" = "*",
+    "Access-Control-Allow-Methods" = "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers" = paste("Content-Type",
+                                            "Authorization",
+                                            sep = ", "),
+    "Access-Control-Max-Age" = "86400")
+  resp$headers <- c(resp$headers %||% character(0L), cors)
+  resp
 }
 
 htmlEscape <- function(s) {
@@ -521,7 +546,12 @@ htmlEscape <- function(s) {
 
 oauth_as_token_handler <- function(cfg) {
   function(req) {
-    p <- req_form_params(req)
+    oauth_with_cors(oauth_as_token_impl(cfg, req))
+  }
+}
+
+oauth_as_token_impl <- function(cfg, req) {
+  p <- req_form_params(req)
     err <- function(code, desc = NULL, status = 400L) {
       body <- jsonlite::toJSON(drop_nulls(list(
         error = code, error_description = desc)),
@@ -601,28 +631,49 @@ oauth_as_token_handler <- function(cfg) {
         return(err("invalid_grant",
                    "unknown, revoked, or expired refresh_token"))
       }
+      # RFC 6749 §6: requested `scope` parameter on refresh MUST be a
+      # subset of the scope originally granted to the refresh token.
+      # When omitted, the access token is reissued with the original
+      # scope.
+      requested_scope_str <- unname(p["scope"])
+      issued_scope <- stored$scope
+      if (!is.na(requested_scope_str) && nzchar(requested_scope_str)) {
+        requested <- strsplit(requested_scope_str, "\\s+")[[1L]]
+        requested <- requested[nzchar(requested)]
+        extra <- setdiff(requested, stored$scope)
+        if (length(extra) > 0L) {
+          return(err("invalid_scope",
+                     sprintf("requested scope exceeds granted: %s",
+                             paste(extra, collapse = " "))))
+        }
+        issued_scope <- requested
+      }
       access <- oauth_as_mint_jwt(cfg,
-        list(subject = stored$subject, scopes = stored$scope),
+        list(subject = stored$subject, scopes = issued_scope),
         cfg$ttl_access, kind = "access")
       body <- jsonlite::toJSON(list(
         access_token = access,
         token_type = "Bearer",
         expires_in = cfg$ttl_access,
-        scope = paste(stored$scope, collapse = " ")),
+        scope = paste(issued_scope, collapse = " ")),
         auto_unbox = TRUE)
       return(http_make_response(200L, body = body, json = TRUE))
     }
-    # Unreachable — gt was validated above.
-    err("unsupported_grant_type",
-        sprintf("grant_type '%s' not supported", gt))
-  }
+  # Unreachable — gt was validated above.
+  err("unsupported_grant_type",
+      sprintf("grant_type '%s' not supported", gt))
 }
 
 # /register handler (RFC 7591 Dynamic Client Registration) ---------------
 
 oauth_as_register_handler <- function(cfg) {
   function(req) {
-    body <- req_json_body(req)
+    oauth_with_cors(oauth_as_register_impl(cfg, req))
+  }
+}
+
+oauth_as_register_impl <- function(cfg, req) {
+  body <- req_json_body(req)
     err <- function(code, desc = NULL, status = 400L) {
       payload <- jsonlite::toJSON(drop_nulls(list(
         error = code, error_description = desc)),
@@ -662,11 +713,10 @@ oauth_as_register_handler <- function(cfg) {
       record$client_secret_hash <- oauth_hash_secret(secret)
       response_payload$client_secret <- secret
     }
-    cfg$client_store$add(client_id, record)
-    payload <- jsonlite::toJSON(response_payload, auto_unbox = TRUE,
-                                force = TRUE)
-    http_make_response(201L, body = payload, json = TRUE)
-  }
+  cfg$client_store$add(client_id, record)
+  payload <- jsonlite::toJSON(response_payload, auto_unbox = TRUE,
+                              force = TRUE)
+  http_make_response(201L, body = payload, json = TRUE)
 }
 
 # /revoke handler (RFC 7009) --------------------------------------------
@@ -677,23 +727,27 @@ oauth_as_register_handler <- function(cfg) {
 # authenticated the same way as on /token.
 oauth_as_revoke_handler <- function(cfg) {
   function(req) {
-    p <- req_form_params(req)
-    err <- function(code, desc = NULL, status = 400L) {
-      body <- jsonlite::toJSON(drop_nulls(list(
-        error = code, error_description = desc)),
-        auto_unbox = TRUE)
-      http_make_response(status, body = body, json = TRUE)
-    }
-    token <- unname(p["token"])
-    if (is.na(token) || !nzchar(token)) {
-      return(err("invalid_request", "token parameter is required"))
-    }
-    auth <- oauth_authenticate_client(cfg, req, p)
-    if (!isTRUE(auth$ok)) return(auth$response)
-    # token_type_hint is advisory — we just look up by id either way.
-    cfg$token_store$revoke(token)
-    http_make_response(200L, body = "", json = TRUE)
+    oauth_with_cors(oauth_as_revoke_impl(cfg, req))
   }
+}
+
+oauth_as_revoke_impl <- function(cfg, req) {
+  p <- req_form_params(req)
+  err <- function(code, desc = NULL, status = 400L) {
+    body <- jsonlite::toJSON(drop_nulls(list(
+      error = code, error_description = desc)),
+      auto_unbox = TRUE)
+    http_make_response(status, body = body, json = TRUE)
+  }
+  token <- unname(p["token"])
+  if (is.na(token) || !nzchar(token)) {
+    return(err("invalid_request", "token parameter is required"))
+  }
+  auth <- oauth_authenticate_client(cfg, req, p)
+  if (!isTRUE(auth$ok)) return(auth$response)
+  # token_type_hint is advisory — we just look up by id either way.
+  cfg$token_store$revoke(token)
+  http_make_response(200L, body = "", json = TRUE)
 }
 
 # Helper: derive a resource-server `oauth_config()` from an AS so a
