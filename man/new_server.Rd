@@ -37,6 +37,24 @@ new_server(
 \item{tools, resources, resource_templates, prompts}{Optional lists of
 capabilities to register up front; equivalent to calling
 \code{\link[=add_capability]{add_capability()}} on each.}
+
+\item{description}{Optional one-line description shown in the
+\code{serverInfo.description} field of the \code{initialize} response
+(2025-11-25 BaseMetadata).}
+
+\item{website_url}{Optional URL of a documentation / homepage,
+surfaced as \code{serverInfo.websiteUrl}.}
+
+\item{icons}{Optional list of icon descriptors (each a list with
+\code{src} and \code{mimeType}), surfaced as \code{serverInfo.icons}.}
+
+\item{strict_capabilities}{When \code{TRUE}, \code{\link[=set_request_handler]{set_request_handler()}}
+refuses to register a handler for a method whose capability root
+(\code{tools}, \code{resources}, \code{prompts}, ...) hasn't been declared on
+this server.}
+
+\item{schema_validator}{Optional pluggable validator returned by
+\code{\link[=new_validator]{new_validator()}} to override the default jsonvalidate engine.}
 }
 \value{
 An \code{McpServer} object.

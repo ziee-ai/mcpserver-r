@@ -28,7 +28,7 @@ set_request_handler <- function(mcp, method, handler) {
     if (!method_root %in% names(caps) &&
         !method_root %in% c("notifications", "initialize", "ping")) {
       stop(sprintf(
-        "strict_capabilities: cannot register handler for '%s' — no '%s' capability declared",
+        "strict_capabilities: cannot register handler for '%s' -- no '%s' capability declared",
         method, method_root))
     }
   }

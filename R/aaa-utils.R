@@ -1,6 +1,6 @@
 #' @keywords internal
 #' @importFrom rlang %||%
-#' @importFrom utils packageVersion
+#' @importFrom utils packageVersion head tail URLencode URLdecode
 #' @importFrom R6 R6Class
 NULL
 

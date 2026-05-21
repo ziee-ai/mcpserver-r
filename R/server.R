@@ -170,6 +170,19 @@ McpServer <- R6::R6Class(
 #' @param tools,resources,resource_templates,prompts Optional lists of
 #'   capabilities to register up front; equivalent to calling
 #'   [add_capability()] on each.
+#' @param description Optional one-line description shown in the
+#'   `serverInfo.description` field of the `initialize` response
+#'   (2025-11-25 BaseMetadata).
+#' @param website_url Optional URL of a documentation / homepage,
+#'   surfaced as `serverInfo.websiteUrl`.
+#' @param icons Optional list of icon descriptors (each a list with
+#'   `src` and `mimeType`), surfaced as `serverInfo.icons`.
+#' @param strict_capabilities When `TRUE`, [set_request_handler()]
+#'   refuses to register a handler for a method whose capability root
+#'   (`tools`, `resources`, `prompts`, ...) hasn't been declared on
+#'   this server.
+#' @param schema_validator Optional pluggable validator returned by
+#'   [new_validator()] to override the default jsonvalidate engine.
 #' @return An `McpServer` object.
 #' @export
 #' @examples
