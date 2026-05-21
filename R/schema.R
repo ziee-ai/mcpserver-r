@@ -222,14 +222,24 @@ compile_validator <- function(sch) {
 validate_args <- function(sch, args) {
   if (is.null(sch)) return(list(ok = TRUE, errors = character(0L)))
   v <- compile_validator(sch)
-  payload <- to_json(args %||% list())
+  # `args = list()` would serialise as `[]`, but MCP tool arguments are
+  # always a JSON object. Force `{}` for empty inputs.
+  payload <- if (is.null(args) || (is.list(args) && length(args) == 0L)) {
+    "{}"
+  } else {
+    to_json(args)
+  }
   ok <- isTRUE(v(payload))
   if (ok) return(list(ok = TRUE, errors = character(0L)))
-  errs <- attr(v(payload, verbose = TRUE), "errors")
-  msgs <- if (is.data.frame(errs)) {
-    apply(errs, 1L, function(r) paste(r, collapse = ": "))
-  } else {
-    character(0L)
+  errs_obj <- tryCatch(attr(v(payload, verbose = TRUE), "errors"),
+                       error = function(e) NULL)
+  msgs <- character(0L)
+  if (is.data.frame(errs_obj) && nrow(errs_obj) > 0L) {
+    msgs <- vapply(seq_len(nrow(errs_obj)), function(i) {
+      paste(unlist(errs_obj[i, , drop = TRUE]), collapse = ": ")
+    }, character(1L))
+  } else if (is.character(errs_obj)) {
+    msgs <- errs_obj
   }
-  list(ok = FALSE, errors = as.character(msgs))
+  list(ok = FALSE, errors = msgs)
 }

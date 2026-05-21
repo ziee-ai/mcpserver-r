@@ -125,6 +125,7 @@ async function main() {
     toggleSimulatedLogging: { bursts: 1 },
     toggleSubscriberUpdates: { count: 2 },
     gzipFileAsResource: { content: "hello world", name: "hi.gz" },
+    simulateResearchQuery: { topic: "vaccines", steps: 2 },
     sampleLLM: { prompt: "What is 2+2?" },
     startElicitation: { message: "Pick a colour" },
     listRoots: {},

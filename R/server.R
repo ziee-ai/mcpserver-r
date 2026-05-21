@@ -17,6 +17,7 @@ McpServer <- R6::R6Class(
 
     sessions = NULL,
     on_initialized_hooks = NULL,
+    task_store = NULL,
 
     initialize = function(name, title, version, instructions,
                           capabilities) {

@@ -99,6 +99,14 @@ handle_tools_call <- function(server, session, params, msg) {
   flag <- new.env(parent = emptyenv())
   flag$cancelled <- FALSE
   assign(as.character(msg$id), flag, envir = session$cancel)
+  # If the tool opts into the tasks lifecycle, create a task entry and
+  # expose a `ctx$task` handle that handlers can use to publish progress.
+  if (isTRUE(tool$tasks)) {
+    store <- ensure_task_store(server)
+    task <- task_create(store, tool$name)
+    task_update_status(store, task$id, "running")
+    ctx$.task <- make_task_handle(store, task$id)
+  }
   # Tool execution is offloaded to a mirai daemon by the dispatcher.
   list(.tool_call = TRUE, tool = tool, args = args, ctx = ctx,
        cancel_flag = flag)

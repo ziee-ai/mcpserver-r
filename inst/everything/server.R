@@ -201,6 +201,38 @@ build_everything_server <- function() {
   ))
 
   mcpserver::add_capability(srv, mcpserver::new_tool(
+    name = "simulateResearchQuery",
+    description = "Multi-stage task: enqueue, run, report — exercises ctx$task.",
+    input_schema = mcpserver::schema(list(
+      topic = mcpserver::property_string("Topic", required = TRUE),
+      steps = mcpserver::property_integer("Number of stages", default = 3L)
+    )),
+    tasks = TRUE,
+    handler = function(args, ctx) {
+      stages <- as.integer(args$steps %||% 3L)
+      ctx$task$append_message(list(
+        type = "text",
+        text = sprintf("research started on '%s' (%d stages)",
+                       args$topic, stages)))
+      for (i in seq_len(stages)) {
+        if (isTRUE(ctx$task$cancelled())) {
+          return(mcpserver::response_error("research cancelled"))
+        }
+        ctx$task$append_message(list(
+          type = "text",
+          text = sprintf("stage %d/%d complete", i, stages)))
+        ctx$send_progress(i, total = stages,
+                          message = sprintf("stage %d", i))
+        Sys.sleep(0.05)
+      }
+      ctx$task$update_status("completed")
+      mcpserver::response_text(sprintf(
+        "research on '%s' finished in %d stages (task %s)",
+        args$topic, stages, ctx$task$id))
+    }
+  ))
+
+  mcpserver::add_capability(srv, mcpserver::new_tool(
     name = "gzipFileAsResource",
     description = "gzip a short input string and return it as an embedded resource blob.",
     input_schema = mcpserver::schema(list(
