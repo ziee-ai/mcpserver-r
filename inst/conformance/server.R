@@ -291,6 +291,98 @@ build_conformance_server <- function() {
           mcpserver::response_text(sprintf("answer: %s", ans))
         }
       ))
+
+      mcpserver::add_capability(mcp, mcpserver::new_tool(
+        name = "test_elicitation_sep1034_defaults",
+        description = "SEP-1034 elicitation with default values for every primitive type.",
+        input_schema = mcpserver::schema(list()),
+        bidirectional = TRUE,
+        handler = function(args, ctx) {
+          res <- tryCatch(ctx$request_elicitation(
+            message = "Please confirm or override these defaults",
+            requested_schema = list(
+              type = "object",
+              properties = list(
+                name = list(type = "string",
+                            default = "John Doe"),
+                age = list(type = "integer",
+                           default = 30L),
+                score = list(type = "number",
+                             default = 95.5),
+                status = list(type = "string",
+                              enum = I(c("active", "inactive",
+                                         "pending")),
+                              default = "active"),
+                verified = list(type = "boolean",
+                                default = TRUE))),
+            timeout = 30),
+            error = function(e) NULL)
+          if (is.null(res)) {
+            return(mcpserver::response_text(
+              "Elicitation completed: action=cancel, content={}"))
+          }
+          mcpserver::response_text(sprintf(
+            "Elicitation completed: action=%s, content=%s",
+            res$action %||% "accept",
+            jsonlite::toJSON(res$content %||% list(),
+                             auto_unbox = TRUE, force = TRUE)))
+        }
+      ))
+
+      mcpserver::add_capability(mcp, mcpserver::new_tool(
+        name = "test_elicitation_sep1330_enums",
+        description = "SEP-1330 elicitation with five enum variants.",
+        input_schema = mcpserver::schema(list()),
+        bidirectional = TRUE,
+        handler = function(args, ctx) {
+          res <- tryCatch(ctx$request_elicitation(
+            message = "Pick options from each variant",
+            requested_schema = list(
+              type = "object",
+              properties = list(
+                untitledSingle = list(type = "string",
+                                      enum = I(c("option1",
+                                                  "option2",
+                                                  "option3"))),
+                titledSingle = list(
+                  type = "string",
+                  oneOf = list(
+                    list(const = "value1", title = "First Option"),
+                    list(const = "value2", title = "Second Option"),
+                    list(const = "value3", title = "Third Option"))),
+                legacyEnum = list(
+                  type = "string",
+                  enum = I(c("opt1", "opt2", "opt3")),
+                  enumNames = I(c("Option One", "Option Two",
+                                  "Option Three"))),
+                untitledMulti = list(
+                  type = "array",
+                  items = list(type = "string",
+                               enum = I(c("option1", "option2",
+                                          "option3")))),
+                titledMulti = list(
+                  type = "array",
+                  items = list(
+                    anyOf = list(
+                      list(const = "value1",
+                           title = "First Choice"),
+                      list(const = "value2",
+                           title = "Second Choice"),
+                      list(const = "value3",
+                           title = "Third Choice")))))),
+            timeout = 30),
+            error = function(e) NULL)
+          if (is.null(res)) {
+            return(mcpserver::response_text(
+              "Elicitation completed: action=cancel, content={}"))
+          }
+          mcpserver::response_text(sprintf(
+            "Elicitation completed: action=%s, content=%s",
+            res$action %||% "accept",
+            jsonlite::toJSON(res$content %||% list(),
+                             auto_unbox = TRUE, force = TRUE)))
+        }
+      ))
     }
   })
 

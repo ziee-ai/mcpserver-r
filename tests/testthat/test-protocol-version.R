@@ -1,13 +1,14 @@
 test_that("mcp_protocol_version returns the latest revision", {
-  expect_equal(mcp_protocol_version(), "2025-06-18")
+  expect_equal(mcp_protocol_version(), "2025-11-25")
 })
 
 test_that("supported protocol versions are listed newest-first", {
   v <- mcp_supported_protocol_versions()
+  expect_true("2025-11-25" %in% v)
   expect_true("2025-06-18" %in% v)
   expect_true("2025-03-26" %in% v)
   expect_true("2024-11-05" %in% v)
-  expect_equal(v[[1L]], "2025-06-18")
+  expect_equal(v[[1L]], "2025-11-25")
 })
 
 test_that("negotiate_protocol_version echoes a supported version", {
@@ -17,9 +18,9 @@ test_that("negotiate_protocol_version echoes a supported version", {
 })
 
 test_that("negotiate_protocol_version falls back to latest on unknown / NULL", {
-  expect_equal(negotiate_protocol_version("2099-01-01"), "2025-06-18")
-  expect_equal(negotiate_protocol_version("not-a-version"), "2025-06-18")
-  expect_equal(negotiate_protocol_version(NULL), "2025-06-18")
+  expect_equal(negotiate_protocol_version("2099-01-01"), "2025-11-25")
+  expect_equal(negotiate_protocol_version("not-a-version"), "2025-11-25")
+  expect_equal(negotiate_protocol_version(NULL), "2025-11-25")
 })
 
 test_that("initialize echoes the negotiated version", {
@@ -35,5 +36,5 @@ test_that("initialize echoes the negotiated version", {
   res <- mcpserver:::route_message(srv, s, list(
     jsonrpc = "2.0", id = 1, method = "initialize",
     params = list(protocolVersion = "2099-01-01")))
-  expect_equal(res$result$protocolVersion, "2025-06-18")
+  expect_equal(res$result$protocolVersion, "2025-11-25")
 })

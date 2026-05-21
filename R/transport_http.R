@@ -126,9 +126,21 @@ validate_origin <- function(state, req) {
     return(!state$require_origin)
   }
   # Exact equality against allowed_origins is the spec-recommended check.
-  # `startsWith` would let "http://localhost.evil.com" pass when
-  # "http://localhost" is on the allow-list.
-  origin %in% state$allowed_origins
+  if (origin %in% state$allowed_origins) return(TRUE)
+  # Also accept any allowed_origin with a `:<port>` suffix appended,
+  # since browsers/clients normally send the full origin including
+  # the port. "http://localhost" should match "http://localhost:1234"
+  # without letting "http://localhost.evil.com" through.
+  for (allowed in state$allowed_origins) {
+    if (grepl(paste0("^",
+                     gsub("([][.\\+*?^$|(){}])", "\\\\\\1", allowed,
+                          perl = TRUE),
+                     ":\\d+$"),
+              origin, perl = TRUE)) {
+      return(TRUE)
+    }
+  }
+  FALSE
 }
 
 # Reject requests whose Host header doesn't match the server's configured
@@ -488,9 +500,13 @@ http_get_handler <- function(state) {
     conn$set_header("Cache-Control", "no-cache")
     conn$set_header("X-Accel-Buffering", "no")
     assign(as.character(conn$id), conn, envir = session$gets)
+    # SEP-1699 priming event: send `id: 0`, `retry: 3000`, empty data
+    # as the first frame so the client can install its EventSource and
+    # learn the retry cadence before any real payload arrives.
+    emit_priming_event(conn)
     # Replay any events after Last-Event-ID.
     last_id <- header_get(req$headers, "Last-Event-ID")
-    if (!is.null(last_id)) {
+    if (!is.null(last_id) && !identical(last_id, "0")) {
       for (e in session$replay_after(last_id)) {
         send_sse_raw(conn, e$payload, id = e$id)
       }

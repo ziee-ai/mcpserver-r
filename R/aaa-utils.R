@@ -16,7 +16,7 @@ NULL
 #' @export
 #' @examples
 #' mcp_protocol_version()
-mcp_protocol_version <- function() "2025-06-18"
+mcp_protocol_version <- function() "2025-11-25"
 
 #' MCP protocol revisions accepted by this server
 #'
@@ -28,7 +28,7 @@ mcp_protocol_version <- function() "2025-06-18"
 #' @examples
 #' mcp_supported_protocol_versions()
 mcp_supported_protocol_versions <- function() {
-  c("2025-06-18", "2025-03-26", "2024-11-05")
+  c("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 }
 
 #' Negotiate the protocol version with an initializing client.
