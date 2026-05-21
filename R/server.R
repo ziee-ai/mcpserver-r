@@ -17,6 +17,8 @@ McpServer <- R6::R6Class(
 
     sessions = NULL,
     on_initialized_hooks = NULL,
+    on_close_hooks = NULL,
+    on_error_hooks = NULL,
     task_store = NULL,
     # Free-form extension state. Sample servers (e.g. the bundled
     # everything-demo) stash their timer/toggle state here so the
@@ -42,6 +44,35 @@ McpServer <- R6::R6Class(
       self$completions <- new.env(parent = emptyenv())
       self$sessions <- new.env(parent = emptyenv())
       self$on_initialized_hooks <- list()
+      self$on_close_hooks <- list()
+      self$on_error_hooks <- list()
+    },
+
+    on_close = function(fn) {
+      stopifnot(is.function(fn))
+      self$on_close_hooks <- c(self$on_close_hooks, list(fn))
+      invisible(self)
+    },
+    on_error = function(fn) {
+      stopifnot(is.function(fn))
+      self$on_error_hooks <- c(self$on_error_hooks, list(fn))
+      invisible(self)
+    },
+    fire_close = function(session_id = NULL) {
+      for (fn in self$on_close_hooks) {
+        safely(fn(self, session_id), log = TRUE)
+      }
+    },
+    fire_error = function(err, session_id = NULL) {
+      for (fn in self$on_error_hooks) {
+        safely(fn(err, self, session_id), log = TRUE)
+      }
+    },
+
+    send_ping = function(session, timeout = 5) {
+      # Best-effort outbound ping using the same blocking call helper.
+      tryCatch(call_client_blocking(session, "ping", NULL, timeout),
+               error = function(e) NULL)
     },
 
     register_tool = function(tool) {
@@ -198,6 +229,73 @@ add_capability <- function(mcp, capability) {
 on_initialized <- function(mcp, fn) {
   mcp$on_initialized(fn)
   invisible(mcp)
+}
+
+#' Register a server-level close callback
+#'
+#' Fires when a transport closes a session (HTTP `DELETE` or stdio EOF)
+#' or when the server itself shuts down. The callback receives the
+#' server and the closing `session_id` (or `NULL` for global shutdown).
+#'
+#' @param mcp An `McpServer`.
+#' @param fn A function `function(mcp, session_id)`.
+#' @return `mcp`, invisibly.
+#' @export
+on_close <- function(mcp, fn) {
+  mcp$on_close(fn)
+  invisible(mcp)
+}
+
+#' Register a server-level error callback
+#'
+#' Fires for uncaught exceptions in request and notification handlers.
+#' The callback receives the condition object, the server, and the
+#' originating `session_id` (or `NULL` if unknown).
+#'
+#' @param mcp An `McpServer`.
+#' @param fn A function `function(err, mcp, session_id)`.
+#' @return `mcp`, invisibly.
+#' @export
+on_error <- function(mcp, fn) {
+  mcp$on_error(fn)
+  invisible(mcp)
+}
+
+#' Merge additional capability declarations into a server
+#'
+#' Mirrors the TS SDK's `Server.registerCapabilities`. Must be called
+#' before [serve_io()] / [serve_http()].
+#'
+#' @param mcp An `McpServer`.
+#' @param capabilities Named list to merge into the server's declared
+#'   capabilities.
+#' @return `mcp`, invisibly.
+#' @export
+register_capabilities <- function(mcp, capabilities) {
+  stopifnot(inherits(mcp, "McpServer"))
+  stopifnot(is.list(capabilities))
+  cur <- mcp$declared_capabilities %||% list()
+  for (k in names(capabilities)) {
+    cur[[k]] <- capabilities[[k]]
+  }
+  mcp$declared_capabilities <- cur
+  invisible(mcp)
+}
+
+#' Send an outbound `ping` to a specific session
+#'
+#' @param mcp An `McpServer`.
+#' @param session_id Target session id.
+#' @param timeout Seconds to wait for the client's reply.
+#' @return The client's reply or `NULL` on timeout.
+#' @export
+send_ping <- function(mcp, session_id, timeout = 5) {
+  stopifnot(inherits(mcp, "McpServer"))
+  if (!exists(session_id, envir = mcp$sessions, inherits = FALSE)) {
+    return(NULL)
+  }
+  sess <- get(session_id, envir = mcp$sessions, inherits = FALSE)
+  mcp$send_ping(sess, timeout)
 }
 
 #' @export

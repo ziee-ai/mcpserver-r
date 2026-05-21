@@ -35,6 +35,18 @@
 #' @param max_event_log Maximum events retained per session for SSE replay.
 #' @param auth Optional auth configuration from [oauth_config()].
 #' @param daemons Number of `mirai` daemons.
+#' @param stateless When `TRUE`, the server does not allocate or
+#'   validate `Mcp-Session-Id` headers and every request is treated as
+#'   a fresh self-contained interaction (no SSE GET stream, no
+#'   resource subscriptions, no server-to-client requests). Mirrors
+#'   the TS SDK's `sessionIdGenerator = undefined` mode.
+#' @param enable_json_response When `TRUE` (default), POST responses
+#'   are always returned as a single JSON envelope. Reserved for a
+#'   future SSE-on-POST mode; today only `TRUE` is supported.
+#' @param onsessioninitialized Optional callback `function(session_id)`
+#'   invoked when a new session is allocated.
+#' @param onsessionclosed Optional callback `function(session_id)`
+#'   invoked when a session is torn down (DELETE or eviction).
 #' @param block Whether to block in the server's `$serve()` event loop. If
 #'   `FALSE`, returns the running `nanoServer` object so the caller can
 #'   drive `later::run_now()` themselves; useful for tests.
@@ -53,6 +65,10 @@ serve_http <- function(mcp,
                        max_event_log = 1000L,
                        auth = NULL,
                        daemons = 4L,
+                       stateless = FALSE,
+                       enable_json_response = TRUE,
+                       onsessioninitialized = NULL,
+                       onsessionclosed = NULL,
                        block = TRUE) {
   stopifnot(inherits(mcp, "McpServer"))
   ensure_daemons(daemons)
@@ -65,6 +81,10 @@ serve_http <- function(mcp,
   state$require_origin <- isTRUE(require_origin)
   state$max_event_log <- as.integer(max_event_log)
   state$path <- path
+  state$stateless <- isTRUE(stateless)
+  state$enable_json_response <- isTRUE(enable_json_response)
+  state$onsessioninitialized <- onsessioninitialized
+  state$onsessionclosed <- onsessionclosed
 
   handlers <- list(
     nanonext::handler(path, http_post_handler(state),  method = "POST"),
@@ -283,6 +303,14 @@ http_post_handler <- function(state) {
     is_init <- isTRUE(is.list(msg) && identical(msg$method, "initialize"))
     session_id <- header_get(req$headers, "Mcp-Session-Id")
 
+    if (is_init && isTRUE(state$stateless)) {
+      ephemeral <- new_ephemeral_session(state$server)
+      out <- route_message(state$server, ephemeral, msg)
+      return(http_make_response(200L,
+        body = jrpc_encode(out),
+        headers = c("MCP-Protocol-Version" = mcp_protocol_version(),
+                    "Content-Type" = "application/json")))
+    }
     if (is_init) {
       # Reject re-initialization on an already-active session.
       if (!is.null(session_id) &&
@@ -294,6 +322,9 @@ http_post_handler <- function(state) {
       session_id <- new_uuid()
       session <- new_http_session(state, session_id, auth_res)
       assign(session_id, session, envir = state$server$sessions)
+      if (is.function(state$onsessioninitialized)) {
+        safely(state$onsessioninitialized(session_id), log = TRUE)
+      }
       out <- route_message(state$server, session, msg)
       env_extra_headers <- c("Mcp-Session-Id" = session_id,
                              "MCP-Protocol-Version" = mcp_protocol_version())
@@ -320,6 +351,25 @@ http_post_handler <- function(state) {
                                             c("Content-Type" = "application/json"))))
     }
 
+    # Stateless mode: handle every request without session state.
+    if (isTRUE(state$stateless)) {
+      ephemeral <- new_ephemeral_session(state$server)
+      ephemeral$auth_subject <- auth_res$subject
+      ephemeral$auth_scopes <- auth_res$scopes
+      ephemeral$request_info <- list(
+        method = req$method, uri = req$uri, headers = req$headers)
+      out <- route_message(state$server, ephemeral, msg)
+      if (is.null(out)) {
+        return(http_make_response(202L,
+          headers = c("Content-Type" = "application/json")))
+      }
+      if (is.list(out) && isTRUE(out$.async)) {
+        out <- drive_async_to_completion(out, state$server, ephemeral)
+      }
+      return(http_make_response(200L,
+        body = jrpc_encode(out),
+        headers = c("Content-Type" = "application/json")))
+    }
     if (is.null(session_id) ||
         !exists(session_id, envir = state$server$sessions, inherits = FALSE)) {
       return(http_make_response(404L,
@@ -464,6 +514,36 @@ http_stream_on_close <- function(state) {
   }
 }
 
+# Build a throwaway Session for a single stateless request. Has no SSE
+# streams and no subscriptions; the dispatcher treats it like any
+# other session for the duration of the call.
+new_ephemeral_session <- function(server) {
+  Session$new("stateless", server, function(e) invisible(NULL),
+              max_event_log = 1L)
+}
+
+# Drive an async marker to completion synchronously by polling the
+# later loop. Returns the final JSON-RPC envelope.
+drive_async_to_completion <- function(marker, server, session,
+                                      deadline_s = 120) {
+  env_f <- new.env(parent = emptyenv()); env_f$done <- FALSE
+  promises::then(finalize_async(marker, server, session),
+    onFulfilled = function(v) { env_f$value <- v; env_f$done <- TRUE },
+    onRejected = function(e) {
+      env_f$value <- jrpc_error(marker$.id %||% NULL,
+                                jrpc_codes$internal_error,
+                                conditionMessage(e))
+      env_f$done <- TRUE
+    })
+  deadline <- Sys.time() + deadline_s
+  while (!isTRUE(env_f$done) && Sys.time() < deadline) {
+    later::run_now(timeoutSecs = 0.05)
+  }
+  env_f$value %||% jrpc_error(marker$.id %||% NULL,
+                              jrpc_codes$internal_error,
+                              "stateless dispatch timed out")
+}
+
 http_method_not_allowed_handler <- function(state) {
   function(req) {
     http_make_response(405L,
@@ -516,6 +596,10 @@ http_delete_handler <- function(state) {
                    inherits = FALSE)
     session$close()
     rm(list = session_id, envir = state$server$sessions)
+    if (is.function(state$onsessionclosed)) {
+      safely(state$onsessionclosed(session_id), log = TRUE)
+    }
+    safely(state$server$fire_close(session_id), log = FALSE)
     http_make_response(204L)
   }
 }

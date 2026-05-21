@@ -16,6 +16,10 @@ serve_http(
   max_event_log = 1000L,
   auth = NULL,
   daemons = 4L,
+  stateless = FALSE,
+  enable_json_response = TRUE,
+  onsessioninitialized = NULL,
+  onsessionclosed = NULL,
   block = TRUE
 )
 }
@@ -43,6 +47,22 @@ default) the Host check is skipped.}
 \item{auth}{Optional auth configuration from \code{\link[=oauth_config]{oauth_config()}}.}
 
 \item{daemons}{Number of \code{mirai} daemons.}
+
+\item{stateless}{When \code{TRUE}, the server does not allocate or
+validate \code{Mcp-Session-Id} headers and every request is treated as
+a fresh self-contained interaction (no SSE GET stream, no
+resource subscriptions, no server-to-client requests). Mirrors
+the TS SDK's \code{sessionIdGenerator = undefined} mode.}
+
+\item{enable_json_response}{When \code{TRUE} (default), POST responses
+are always returned as a single JSON envelope. Reserved for a
+future SSE-on-POST mode; today only \code{TRUE} is supported.}
+
+\item{onsessioninitialized}{Optional callback \verb{function(session_id)}
+invoked when a new session is allocated.}
+
+\item{onsessionclosed}{Optional callback \verb{function(session_id)}
+invoked when a session is torn down (DELETE or eviction).}
 
 \item{block}{Whether to block in the server's \verb{$serve()} event loop. If
 \code{FALSE}, returns the running \code{nanoServer} object so the caller can

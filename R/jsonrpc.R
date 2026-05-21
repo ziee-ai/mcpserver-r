@@ -81,3 +81,50 @@ jrpc_encode <- function(envelope) {
 jrpc_decode <- function(text) {
   from_json(text)
 }
+
+#' Test whether `x` is a well-formed JSON-RPC 2.0 response envelope
+#'
+#' A response carries `jsonrpc = "2.0"`, an `id`, and either a `result`
+#' or an `error` (but not both). Requests and notifications are
+#' rejected.
+#'
+#' @param x Any R object.
+#' @return `TRUE` / `FALSE`.
+#' @export
+#' @examples
+#' is_jsonrpc_response(list(jsonrpc = "2.0", id = 1, result = list()))
+is_jsonrpc_response <- function(x) {
+  if (!is.list(x)) return(FALSE)
+  if (!identical(x$jsonrpc, "2.0")) return(FALSE)
+  if (is.null(x$id)) return(FALSE)
+  if ("method" %in% names(x)) return(FALSE)
+  has_result <- "result" %in% names(x)
+  has_error <- "error" %in% names(x)
+  # MUST have exactly one of result / error
+  xor(has_result, has_error)
+}
+
+#' Test whether `x` is a `tools/call` result envelope
+#'
+#' A `CallToolResult` carries a non-empty `content` array (each item
+#' has a `type`) and may carry `isError` and `structuredContent`.
+#'
+#' @param x Any R object.
+#' @return `TRUE` / `FALSE`.
+#' @export
+#' @examples
+#' is_call_tool_result(list(content = list(list(type = "text", text = "x"))))
+is_call_tool_result <- function(x) {
+  if (!is.list(x)) return(FALSE)
+  if (is.null(x$content)) return(FALSE)
+  if (!is.list(x$content)) return(FALSE)
+  for (item in x$content) {
+    if (!is.list(item) ||
+        is.null(item$type) ||
+        !is.character(item$type) ||
+        length(item$type) != 1L) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}

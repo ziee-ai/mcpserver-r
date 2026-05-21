@@ -167,6 +167,11 @@ make_ctx <- function(session, msg = NULL) {
   ctx$auth_subject <- session$auth_subject
   ctx$auth_scopes <- session$auth_scopes
   ctx$progress_token <- msg$params$`_meta`$progressToken
+  # Full incoming `_meta` (minus progressToken which is broken out).
+  ctx$msg_meta <- {
+    meta <- msg$params$`_meta`
+    if (is.list(meta)) meta else NULL
+  }
   ctx$request_info <- session$request_info
   ctx$.session <- session
   ctx$.msg     <- msg
