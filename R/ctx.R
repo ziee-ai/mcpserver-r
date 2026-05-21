@@ -22,13 +22,37 @@
       send_progress(x$.session, x$progress_token, progress, total, message)
     },
     cancelled = function() {
+      # In-process fast path: bidirectional tools run on the transport
+      # thread and share `session$cancel` with the notification handler.
       mid <- x$.msg$id
-      if (is.null(mid)) return(FALSE)
+      if (!is.null(mid)) {
+        key <- as.character(mid)
+        if (exists(key, envir = x$.session$cancel, inherits = FALSE) &&
+            isTRUE(get(key, envir = x$.session$cancel,
+                       inherits = FALSE)$cancelled)) {
+          return(TRUE)
+        }
+      }
+      # Cross-process path: inside a mirai daemon the env above is a
+      # stale snapshot from serialisation. The flag-file is the source
+      # of truth — the transport thread touches it on cancel.
+      path <- get0(".cancel_path", envir = x, inherits = FALSE)
+      if (!is.null(path) && file.exists(path)) return(TRUE)
+      FALSE
+    },
+    on_cancel = function(fn) {
+      stopifnot(is.function(fn))
+      mid <- x$.msg$id
+      if (is.null(mid)) {
+        stop("ctx$on_cancel() requires a request id on the message")
+      }
       key <- as.character(mid)
       if (!exists(key, envir = x$.session$cancel, inherits = FALSE)) {
-        return(FALSE)
+        stop("ctx$on_cancel() called outside a cancellable request")
       }
-      isTRUE(get(key, envir = x$.session$cancel, inherits = FALSE)$cancelled)
+      entry <- get(key, envir = x$.session$cancel, inherits = FALSE)
+      entry$on_cancel_fns <- c(entry$on_cancel_fns, list(fn))
+      invisible(NULL)
     },
     request_sampling = function(messages, model_preferences = NULL,
                                 system_prompt = NULL,

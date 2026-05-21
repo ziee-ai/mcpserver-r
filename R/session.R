@@ -95,12 +95,15 @@ Session <- R6::R6Class(
     },
 
     # Cancel a still-pending client request (e.g. when notifications/cancelled
-    # arrives or the session is torn down).
+    # arrives or the session is torn down). Sets the in-process flag,
+    # touches the cross-process flag file so daemon-side tool handlers
+    # observe the cancel, and fires any `ctx$on_cancel(fn)` callbacks
+    # the handler registered.
     cancel_request = function(client_id) {
       key <- as.character(client_id)
       if (exists(key, envir = self$cancel, inherits = FALSE)) {
-        flag <- get(key, envir = self$cancel, inherits = FALSE)
-        flag$cancelled <- TRUE
+        entry <- get(key, envir = self$cancel, inherits = FALSE)
+        cancel_entry_signal(entry)
       }
       invisible(NULL)
     },
@@ -150,9 +153,12 @@ Session <- R6::R6Class(
         entry$env$is_error <- TRUE
         entry$env$value <- list(code = -32000L, message = "session closed")
         entry$env$done <- TRUE
-        nanonext::cv_signal(entry$cv)
+        if (!is.null(entry$cv)) {
+          safely(nanonext::cv_signal(entry$cv), log = FALSE)
+        }
         rm(list = k, envir = self$pending)
       }
+      cancel_sweep_session(self)
     }
   )
 )

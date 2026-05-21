@@ -208,13 +208,11 @@ finalize_async <- function(marker, server, session) {
                    val$message %||% "tool failed",
                    data = val$data)
       } else {
-        # Clean up the cancellation flag we left in session$cancel.
-        cancel_key <- as.character(marker$.id)
-        if (exists(cancel_key, envir = session$cancel, inherits = FALSE)) {
-          rm(list = cancel_key, envir = session$cancel)
-        }
         jrpc_response(marker$.id, finalize_tool_result(tool, val))
       }
+      # Always release the cancellation entry (success and error
+      # paths both leak otherwise).
+      cancel_entry_close(session, marker$.id)
       return(inline_promise(out))
     }
     expr <- quote({
@@ -232,12 +230,7 @@ finalize_async <- function(marker, server, session) {
                          call_ctx = ctx))
     return(promises::then(p,
       onFulfilled = function(v) {
-        # Clean up the cancellation flag whether the handler succeeded
-        # or returned an mcp_err sentinel.
-        cancel_key <- as.character(marker$.id)
-        if (exists(cancel_key, envir = session$cancel, inherits = FALSE)) {
-          rm(list = cancel_key, envir = session$cancel)
-        }
+        cancel_entry_close(session, marker$.id)
         if (is.list(v) && isTRUE(v$.mcp_err)) {
           return(jrpc_error(marker$.id,
                             v$code %||% jrpc_codes$internal_error,
@@ -247,6 +240,7 @@ finalize_async <- function(marker, server, session) {
         jrpc_response(marker$.id, finalize_tool_result(tool, v))
       },
       onRejected = function(e) {
+        cancel_entry_close(session, marker$.id)
         jrpc_error(marker$.id, jrpc_codes$internal_error,
                    conditionMessage(e))
       }))

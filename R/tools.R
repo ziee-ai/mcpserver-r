@@ -120,10 +120,12 @@ handle_tools_call <- function(server, session, params, msg) {
                       data = list(errors = j_list(v$errors))))
   }
   ctx <- make_ctx(session, msg)
-  # Register a cancellation flag the handler can check via ctx$cancelled().
-  flag <- new.env(parent = emptyenv())
-  flag$cancelled <- FALSE
-  assign(as.character(msg$id), flag, envir = session$cancel)
+  # Register a cancellation entry. The in-process flag is observed by
+  # bidirectional tools (which run on the transport thread); the
+  # flag-file path on `ctx$.cancel_path` is observed by non-bidirectional
+  # tools running inside `mirai` daemons.
+  entry <- cancel_entry_open(session, msg$id)
+  ctx$.cancel_path <- entry$flag_path
   # If the tool opts into the tasks lifecycle, create a task entry
   # scoped to this session and expose a `ctx$task` handle that handlers
   # can use to publish progress.
@@ -136,7 +138,7 @@ handle_tools_call <- function(server, session, params, msg) {
   }
   # Tool execution is offloaded to a mirai daemon by the dispatcher.
   list(.tool_call = TRUE, tool = tool, args = args, ctx = ctx,
-       cancel_flag = flag)
+       cancel_entry = entry)
 }
 
 # Post-handler conversion of a raw user return into the MCP result shape.
