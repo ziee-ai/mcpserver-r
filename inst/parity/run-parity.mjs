@@ -7,9 +7,10 @@
 // Connects via the official @modelcontextprotocol/sdk Streamable HTTP
 // client, declares sampling / elicitation / roots client capabilities,
 // installs handlers for the matching server-to-client requests, and walks
-// every tool, resource, and prompt the server advertises. A JSON report
-// with per-check pass/fail entries is written to --report (or stdout
-// when --report is omitted). The process exits 0 when every check passed,
+// every tool, resource, and prompt the server advertises using the
+// TypeScript everything-server's exact names. A JSON report with
+// per-check pass/fail entries is written to --report (or stdout when
+// --report is omitted). The process exits 0 when every check passed,
 // non-zero otherwise.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -69,8 +70,6 @@ async function main() {
     }
   );
 
-  // Server-to-client request handlers. We respond with deterministic
-  // mock data so the parity test is reproducible.
   client.setRequestHandler(CreateMessageRequestSchema, async (req) => {
     return {
       role: "assistant",
@@ -85,16 +84,21 @@ async function main() {
     };
   });
   client.setRequestHandler(ElicitRequestSchema, async (req) => {
-    return { action: "accept", content: { answer: "mock-answer" } };
+    return {
+      action: "accept",
+      content: { answer: "mock-answer", confidence: 0.9 },
+    };
   });
   client.setRequestHandler(ListRootsRequestSchema, async () => {
-    return { roots: [{ uri: "file:///tmp/mock-root", name: "mock-root" }] };
+    return {
+      roots: [
+        { uri: "file:///tmp/mock-root", name: "mock-root" },
+        { uri: "file:///workspace", name: "workspace" },
+      ],
+    };
   });
 
   const transport = new StreamableHTTPClientTransport(new URL(url), {
-    // Our server defaults to validating the Origin header to defend
-    // against DNS rebinding; supply a loopback Origin so the request
-    // passes that check.
     requestInit: {
       headers: { Origin: "http://127.0.0.1" },
     },
@@ -111,24 +115,32 @@ async function main() {
   });
   const toolNames = tools?.names ?? [];
 
-  // Helper to build sane arguments per tool from the server's schema.
+  // Match the TypeScript everything-server's tool argument shapes.
   const sampleArgs = {
-    echo: { message: "hello" },
-    add: { a: 2, b: 40 },
-    printEnv: {},
-    longRunningOperation: { duration: 2 },
-    getTinyImage: {},
-    annotatedMessage: { includeImage: false },
-    getResourceReference: { resourceId: "42" },
-    getResourceLinks: { count: 2 },
-    setLogLevel: { level: "info" },
-    toggleSimulatedLogging: { bursts: 1 },
-    toggleSubscriberUpdates: { count: 2 },
-    gzipFileAsResource: { content: "hello world", name: "hi.gz" },
-    simulateResearchQuery: { topic: "vaccines", steps: 2 },
-    sampleLLM: { prompt: "What is 2+2?" },
-    startElicitation: { message: "Pick a colour" },
-    listRoots: {},
+    "echo": { message: "hello" },
+    "get-sum": { a: 2, b: 40 },
+    "get-structured-content": { location: "Boston" },
+    "get-env": {},
+    "trigger-long-running-operation": { duration: 0.5, steps: 3 },
+    "get-tiny-image": {},
+    "get-annotated-message": { messageType: "success", includeImage: false },
+    "get-resource-reference": { resourceType: "Text", resourceId: "42" },
+    "get-resource-links": { count: 3 },
+    "gzip-file-as-resource": {
+      content: "hello world",
+      name: "hi.gz",
+      outputType: "resource",
+    },
+    "toggle-simulated-logging": { enable: true },
+    "toggle-subscriber-updates": { enable: true },
+    "simulate-research-query": { topic: "vaccines", steps: 2 },
+    "trigger-sampling-request": {
+      prompt: "What is 2+2?",
+      maxTokens: 10,
+      temperature: 0.5,
+    },
+    "trigger-elicitation-request": { message: "Pick a colour" },
+    "get-roots-list": {},
   };
 
   for (const name of toolNames) {
@@ -142,13 +154,31 @@ async function main() {
           }`
         );
       }
-      return {
-        contentTypes: (res.content ?? []).map((c) => c.type),
-      };
+      return { contentTypes: (res.content ?? []).map((c) => c.type) };
     });
   }
 
-  // Resources -------------------------------------------------------------
+  // Toggle off after the smoke pass so we don't leak intervals.
+  if (toolNames.includes("toggle-simulated-logging")) {
+    await safe("tools/call toggle-simulated-logging off", async () => {
+      const res = await client.callTool({
+        name: "toggle-simulated-logging",
+        arguments: { enable: false },
+      });
+      return { ok: !res.isError };
+    });
+  }
+  if (toolNames.includes("toggle-subscriber-updates")) {
+    await safe("tools/call toggle-subscriber-updates off", async () => {
+      const res = await client.callTool({
+        name: "toggle-subscriber-updates",
+        arguments: { enable: false },
+      });
+      return { ok: !res.isError };
+    });
+  }
+
+  // Resources ----------------------------------------------------------
   const resources = await safe("resources/list", async () => {
     const r = await client.listResources();
     return { count: r.resources.length, uris: r.resources.map((x) => x.uri) };
@@ -156,8 +186,10 @@ async function main() {
   for (const uri of resources?.uris ?? []) {
     await safe(`resources/read ${uri}`, async () => {
       const r = await client.readResource({ uri });
-      return { mime: r.contents?.[0]?.mimeType, hasBody:
-        Boolean(r.contents?.[0]?.text || r.contents?.[0]?.blob) };
+      return {
+        mime: r.contents?.[0]?.mimeType,
+        hasBody: Boolean(r.contents?.[0]?.text || r.contents?.[0]?.blob),
+      };
     });
   }
 
@@ -176,49 +208,62 @@ async function main() {
     });
   }
 
-  // Prompts ---------------------------------------------------------------
+  // Resource subscriptions ---------------------------------------------
+  const subscriptionUri = "demo://resource/dynamic/text/1";
+  await safe(`resources/subscribe ${subscriptionUri}`, async () => {
+    await client.subscribeResource({ uri: subscriptionUri });
+    return { ok: true };
+  });
+  await safe(`resources/unsubscribe ${subscriptionUri}`, async () => {
+    await client.unsubscribeResource({ uri: subscriptionUri });
+    return { ok: true };
+  });
+
+  // Prompts ------------------------------------------------------------
   const prompts = await safe("prompts/list", async () => {
     const r = await client.listPrompts();
     return { count: r.prompts.length, names: r.prompts.map((p) => p.name) };
   });
 
   const promptArgs = {
-    simple: {},
-    "args-prompt": { city: "Boston", style: "casual" },
-    "completions-prompt": { department: "Engineering", name: "Alice" },
-    "embedded-resource-prompt": { id: "12" },
+    "simple-prompt": {},
+    "args-prompt": { city: "Boston", state: "MA" },
+    "completable-prompt": { department: "Engineering", name: "Alice" },
+    "resource-prompt": { resourceType: "Text", resourceId: "12" },
   };
   for (const name of prompts?.names ?? []) {
     await safe(`prompts/get ${name}`, async () => {
-      const r = await client.getPrompt({ name, arguments: promptArgs[name] ?? {} });
+      const r = await client.getPrompt({
+        name,
+        arguments: promptArgs[name] ?? {},
+      });
       return { messageCount: r.messages?.length ?? 0 };
     });
   }
 
-  // Completions -----------------------------------------------------------
+  // Completions --------------------------------------------------------
   await safe("completion/complete department", async () => {
     const r = await client.complete({
-      ref: { type: "ref/prompt", name: "completions-prompt" },
+      ref: { type: "ref/prompt", name: "completable-prompt" },
       argument: { name: "department", value: "Eng" },
     });
     return { values: r.completion?.values };
   });
   await safe("completion/complete name (cascading)", async () => {
     const r = await client.complete({
-      ref: { type: "ref/prompt", name: "completions-prompt" },
+      ref: { type: "ref/prompt", name: "completable-prompt" },
       argument: { name: "name", value: "A" },
       context: { arguments: { department: "Engineering" } },
     });
     return { values: r.completion?.values };
   });
 
-  // Logging level switch --------------------------------------------------
+  // Logging level switch ----------------------------------------------
   await safe("logging/setLevel info", async () => {
     await client.setLoggingLevel("info");
     return { ok: true };
   });
 
-  // Done — close.
   await safe("close", async () => {
     await client.close();
     return true;

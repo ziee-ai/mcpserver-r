@@ -25,6 +25,11 @@ handle_roots_changed <- function(server, session, params) {
 # the transport thread (i.e. inside a tool marked `bidirectional = TRUE`),
 # because the pending-request table is local to that process.
 call_client_blocking <- function(session, method, params, timeout) {
+  if (session$pending_count() >= session$pending_cap) {
+    stop(sprintf(
+      "pending server->client request cap (%d) reached",
+      session$pending_cap))
+  }
   rid <- session$new_request_id()
   bag <- new.env(parent = emptyenv())
   bag$done <- FALSE

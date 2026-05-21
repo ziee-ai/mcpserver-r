@@ -53,10 +53,24 @@ Session <- R6::R6Class(
       id
     },
 
+    # Maximum outstanding server->client requests per session. Bounds
+    # the daemon-pool exposure to a misbehaving client that never
+    # answers sampling/elicitation/roots.
+    pending_cap = 32L,
+
+    pending_count = function() {
+      length(ls(self$pending, all.names = TRUE))
+    },
+
     # Register an outgoing request that the dispatcher should match against
     # a subsequent client `response` envelope. cv is a nanonext condition
     # variable that the daemon-side caller is waiting on.
     register_pending = function(id, cv, env) {
+      if (self$pending_count() >= self$pending_cap) {
+        stop(sprintf(
+          "pending server->client request cap (%d) reached",
+          self$pending_cap))
+      }
       assign(as.character(id),
              list(cv = cv, env = env, deadline = NA_real_),
              envir = self$pending)

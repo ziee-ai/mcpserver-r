@@ -116,7 +116,7 @@ test_that("HTTP transport handles initialize / list / call / DELETE", {
     httr2::req_perform()
   parsed <- jsonlite::fromJSON(httr2::resp_body_string(tc),
                                simplifyVector = FALSE)
-  expect_equal(parsed$result$content[[1L]]$text, "hi")
+  expect_equal(parsed$result$content[[1L]]$text, "Echo: hi")
 
   # bad origin -> 403
   bo <- httr2::request(sprintf("http://127.0.0.1:%d/mcp", port)) |>

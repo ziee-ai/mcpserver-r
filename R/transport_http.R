@@ -244,7 +244,12 @@ http_get_handler <- function(state) {
     auth_res <- post_authenticate(state, req)
     if (!isTRUE(auth_res$ok)) {
       conn$set_status(401L)
-      conn$set_header("WWW-Authenticate", "Bearer")
+      challenge <- if (!is.null(state$auth)) {
+        sprintf('Bearer realm="%s", resource_metadata="%s"',
+                state$auth$audience,
+                sub("/+$", "", state$auth$issuer))
+      } else "Bearer"
+      conn$set_header("WWW-Authenticate", challenge)
       conn$send("unauthorized"); conn$close(); return()
     }
     session_id <- header_get(req$headers, "Mcp-Session-Id")
@@ -290,6 +295,11 @@ http_delete_handler <- function(state) {
   function(req) {
     if (!validate_origin(state, req)) {
       return(http_make_response(403L))
+    }
+    if (!check_protocol_version(req)) {
+      return(http_make_response(400L,
+        body = '{"error":"unsupported MCP-Protocol-Version"}',
+        json = TRUE))
     }
     auth_res <- post_authenticate(state, req)
     if (!isTRUE(auth_res$ok)) return(http_unauthorized(state))

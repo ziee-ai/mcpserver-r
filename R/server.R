@@ -18,6 +18,10 @@ McpServer <- R6::R6Class(
     sessions = NULL,
     on_initialized_hooks = NULL,
     task_store = NULL,
+    # Free-form extension state. Sample servers (e.g. the bundled
+    # everything-demo) stash their timer/toggle state here so the
+    # core package keeps no reference to it.
+    extension_state = NULL,
 
     initialize = function(name, title, version, instructions,
                           capabilities) {

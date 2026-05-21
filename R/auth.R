@@ -58,8 +58,11 @@ oauth_fetch_jwks <- function(cfg, force = FALSE) {
       Sys.time() < cfg$jwks_cache$expires) {
     return(cfg$jwks_cache$json)
   }
-  resp <- httr2::req_perform(httr2::request(cfg$jwks_uri))
-  json <- httr2::resp_body_string(resp)
+  json <- tryCatch({
+    resp <- httr2::req_perform(httr2::request(cfg$jwks_uri))
+    httr2::resp_body_string(resp)
+  }, error = function(e) NULL)
+  if (is.null(json)) return(cfg$jwks_cache$json)
   cfg$jwks_cache$json <- json
   cfg$jwks_cache$expires <- Sys.time() + 3600
   json

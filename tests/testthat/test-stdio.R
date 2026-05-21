@@ -89,5 +89,5 @@ test_that("stdio transport replies to initialize and tools/list", {
                info = paste("stderr:",
                             paste(p$read_error_lines(), collapse = " | ")))
   tc <- jsonlite::fromJSON(resp_line, simplifyVector = FALSE)
-  expect_equal(tc$result$content[[1L]]$text, "stdio works")
+  expect_equal(tc$result$content[[1L]]$text, "Echo: stdio works")
 })
