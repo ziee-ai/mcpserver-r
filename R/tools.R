@@ -1,0 +1,120 @@
+# Tool registration + tools/list + tools/call ----------------------------
+
+#' Define an MCP tool
+#'
+#' A tool packages a name, JSON-Schema declaration of its arguments, an
+#' optional output schema, optional MCP annotations, and an R handler
+#' function that the dispatcher calls with parsed arguments. The handler
+#' should return a value from one of the `response_*()` constructors.
+#'
+#' Handlers receive two arguments: `args` (a named list of the validated
+#' input arguments) and `ctx` (a context object exposing progress,
+#' logging, sampling, elicitation, and roots helpers).
+#'
+#' @param name Tool identifier (must be unique within a server).
+#' @param description Human-readable description.
+#' @param input_schema A schema built with [schema()].
+#' @param output_schema Optional schema for the tool's structured content.
+#' @param annotations Optional named list of MCP annotations (e.g.
+#'   `list(readOnlyHint = TRUE)`).
+#' @param handler A function `function(args, ctx)`.
+#' @param tasks Whether the tool participates in the experimental
+#'   tasks lifecycle (default `FALSE`).
+#' @param bidirectional Set `TRUE` for tools that issue server-to-client
+#'   requests (`ctx$request_sampling()`, `ctx$request_elicitation()`,
+#'   `ctx$request_roots()`). Such handlers execute on the transport
+#'   thread instead of inside a `mirai` daemon so they can access the
+#'   live pending-request table. The transport stays responsive because
+#'   the handler yields via `later::run_now()` while waiting on the
+#'   client.
+#' @return A tool descriptor (tagged list) for use with [add_capability()].
+#' @export
+#' @examples
+#' new_tool(
+#'   name = "echo",
+#'   description = "Echo back the input",
+#'   input_schema = schema(list(text = property_string(required = TRUE))),
+#'   handler = function(args, ctx) response_text(args$text)
+#' )
+new_tool <- function(name,
+                     description,
+                     input_schema,
+                     output_schema = NULL,
+                     annotations = NULL,
+                     handler,
+                     tasks = FALSE,
+                     bidirectional = FALSE) {
+  stopifnot(is.character(name), length(name) == 1L)
+  stopifnot(is.function(handler))
+  out <- list(
+    name = name,
+    description = as.character(description),
+    input_schema = input_schema,
+    output_schema = output_schema,
+    annotations = annotations,
+    handler = handler,
+    tasks = isTRUE(tasks),
+    bidirectional = isTRUE(bidirectional)
+  )
+  attr(out, "mcp_kind") <- "tool"
+  out
+}
+
+# Wire representation used in tools/list responses.
+tool_descriptor <- function(tool) {
+  desc <- list(
+    name = tool$name,
+    description = tool$description,
+    inputSchema = tool$input_schema
+  )
+  if (!is.null(tool$output_schema)) desc$outputSchema <- tool$output_schema
+  if (!is.null(tool$annotations))   desc$annotations  <- tool$annotations
+  desc
+}
+
+handle_tools_list <- function(server, session, params, msg = NULL) {
+  tools <- ls(server$tools, all.names = TRUE)
+  out <- lapply(tools, function(n) {
+    tool_descriptor(get(n, envir = server$tools, inherits = FALSE))
+  })
+  list(tools = j_list(out))
+}
+
+handle_tools_call <- function(server, session, params, msg) {
+  name <- params$name
+  if (is.null(name) || !exists(name, envir = server$tools, inherits = FALSE)) {
+    return(jrpc_error(msg$id, jrpc_codes$invalid_params,
+                      sprintf("unknown tool: %s", as.character(name))))
+  }
+  tool <- get(name, envir = server$tools, inherits = FALSE)
+  args <- params$arguments %||% list()
+  v <- validate_args(tool$input_schema, args)
+  if (!v$ok) {
+    return(jrpc_error(msg$id, jrpc_codes$invalid_params,
+                      "invalid tool arguments",
+                      data = list(errors = j_list(v$errors))))
+  }
+  ctx <- make_ctx(session, msg)
+  # Register a cancellation flag the handler can check via ctx$cancelled().
+  flag <- new.env(parent = emptyenv())
+  flag$cancelled <- FALSE
+  assign(as.character(msg$id), flag, envir = session$cancel)
+  # Tool execution is offloaded to a mirai daemon by the dispatcher.
+  list(.tool_call = TRUE, tool = tool, args = args, ctx = ctx,
+       cancel_flag = flag)
+}
+
+# Post-handler conversion of a raw user return into the MCP result shape.
+finalize_tool_result <- function(tool, value) {
+  norm <- normalize_tool_result(value)
+  if (!is.null(tool$output_schema) && !is.null(norm$structuredContent)) {
+    v <- validate_args(tool$output_schema, norm$structuredContent)
+    if (!v$ok) {
+      return(list(content = list(response_text(
+        sprintf("structured content failed output_schema: %s",
+                paste(v$errors, collapse = "; "))
+      )), isError = TRUE))
+    }
+  }
+  norm
+}

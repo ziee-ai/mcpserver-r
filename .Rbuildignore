@@ -1,0 +1,14 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^\.gitignore$
+^LICENSE\.md$
+^cran-comments\.md$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^revdep$
+^CRAN-RELEASE$
+^\.lintr$
+^inst/parity/node_modules$
+^inst/parity/package-lock\.json$

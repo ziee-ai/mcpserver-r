@@ -1,0 +1,13 @@
+{
+  "name": "mcpserver-parity",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Drives the mcpserver everything-demo with the official MCP TypeScript SDK to verify spec parity.",
+  "scripts": {
+    "parity": "node run-parity.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

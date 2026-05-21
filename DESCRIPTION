@@ -1,0 +1,39 @@
+Package: mcpserver
+Title: Model Context Protocol Server SDK
+Version: 0.1.0
+Authors@R: person("Phi", "Bya", email = "hungbya@gmail.com",
+                  role = c("aut", "cre"))
+Description: Build Model Context Protocol (MCP) servers in R that expose
+    tools, resources, and prompts to large language model clients. Supports
+    the stdio and Streamable HTTP transports defined by the MCP
+    specification (protocol revision 2025-06-18), with non-blocking handler
+    execution via 'mirai' worker daemons and Server-Sent Events streaming
+    via 'nanonext'. Includes optional OAuth 2.1 resource server validation
+    and the building blocks (sampling, elicitation, roots, completions,
+    progress, logging, subscriptions, tasks) needed to reach feature parity
+    with reference MCP servers.
+License: MIT + file LICENSE
+URL: https://github.com/tinnlab/mcpserver-r
+BugReports: https://github.com/tinnlab/mcpserver-r/issues
+Encoding: UTF-8
+Depends:
+    R (>= 4.3)
+Imports:
+    R6 (>= 2.5.0),
+    httr2 (>= 1.0.0),
+    jose (>= 1.2.0),
+    jsonlite (>= 1.8.0),
+    jsonvalidate (>= 1.3.0),
+    later (>= 1.3.0),
+    mirai (>= 2.0.0),
+    nanonext (>= 1.9.0),
+    openssl (>= 2.0.0),
+    promises (>= 1.2.0),
+    rlang (>= 1.1.0)
+Suggests:
+    processx,
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3
+RoxygenNote: 8.0.0
+Roxygen: list(markdown = TRUE)
