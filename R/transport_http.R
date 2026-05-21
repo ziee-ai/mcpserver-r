@@ -34,6 +34,12 @@
 #' @param tls Optional TLS configuration from `nanonext::tls_config()`.
 #' @param max_event_log Maximum events retained per session for SSE replay.
 #' @param auth Optional auth configuration from [oauth_config()].
+#' @param oauth_as Optional authorization-server configuration from
+#'   [oauth_server_config()]. When set, the server additionally
+#'   exposes `/.well-known/oauth-authorization-server`, `/authorize`,
+#'   `/token`, `/register`, and `/jwks`. If `auth` is also `NULL`
+#'   a matching resource-server config is derived automatically so a
+#'   single process can both issue and verify its own bearer tokens.
 #' @param daemons Number of `mirai` daemons.
 #' @param stateless When `TRUE`, the server does not allocate or
 #'   validate `Mcp-Session-Id` headers and every request is treated as
@@ -64,6 +70,7 @@ serve_http <- function(mcp,
                        tls = NULL,
                        max_event_log = 1000L,
                        auth = NULL,
+                       oauth_as = NULL,
                        daemons = 4L,
                        stateless = FALSE,
                        enable_json_response = TRUE,
@@ -73,9 +80,28 @@ serve_http <- function(mcp,
   stopifnot(inherits(mcp, "McpServer"))
   ensure_daemons(daemons)
 
+  # If an authorization server is supplied without an explicit
+  # resource-server config, derive a matching one so issued tokens
+  # are accepted by the same process. If both are set, sanity-check
+  # that issuer + audience agree.
+  if (!is.null(oauth_as)) {
+    if (!inherits(oauth_as, "mcp_oauth_server_config")) {
+      stop("oauth_as must be an oauth_server_config() result")
+    }
+    if (is.null(auth)) {
+      auth <- oauth_config_from_server(oauth_as)
+    } else {
+      if (!identical(auth$issuer, oauth_as$issuer) ||
+          !identical(auth$audience, oauth_as$audience)) {
+        stop("oauth_as and auth disagree on issuer/audience")
+      }
+    }
+  }
+
   state <- new.env(parent = emptyenv())
   state$server <- mcp
   state$auth   <- auth
+  state$oauth_as <- oauth_as
   state$allowed_origins <- allowed_origins
   state$allowed_hosts <- allowed_hosts
   state$require_origin <- isTRUE(require_origin)
@@ -105,6 +131,26 @@ serve_http <- function(mcp,
     nanonext::handler(path, http_method_not_allowed_handler(state),
                       method = "HEAD")
   )
+  # Authorization-server endpoints (RFC 8414 + RFC 7591 + PKCE-S256)
+  # are mounted only when an `oauth_as` config was provided.
+  if (!is.null(oauth_as)) {
+    handlers <- c(handlers, list(
+      nanonext::handler("/.well-known/oauth-authorization-server",
+                        oauth_as_metadata_handler(oauth_as),
+                        method = "GET"),
+      nanonext::handler("/authorize",
+                        oauth_as_authorize_handler(oauth_as),
+                        method = "GET"),
+      nanonext::handler("/token",
+                        oauth_as_token_handler(oauth_as),
+                        method = "POST"),
+      nanonext::handler("/register",
+                        oauth_as_register_handler(oauth_as),
+                        method = "POST"),
+      nanonext::handler("/jwks",
+                        oauth_as_jwks_handler(oauth_as),
+                        method = "GET")))
+  }
   url <- sprintf("%s://%s:%d",
                  if (is.null(tls)) "http" else "https",
                  host, port)

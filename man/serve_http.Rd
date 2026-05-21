@@ -15,6 +15,7 @@ serve_http(
   tls = NULL,
   max_event_log = 1000L,
   auth = NULL,
+  oauth_as = NULL,
   daemons = 4L,
   stateless = FALSE,
   enable_json_response = TRUE,
@@ -45,6 +46,13 @@ default) the Host check is skipped.}
 \item{max_event_log}{Maximum events retained per session for SSE replay.}
 
 \item{auth}{Optional auth configuration from \code{\link[=oauth_config]{oauth_config()}}.}
+
+\item{oauth_as}{Optional authorization-server configuration from
+\code{\link[=oauth_server_config]{oauth_server_config()}}. When set, the server additionally
+exposes \verb{/.well-known/oauth-authorization-server}, \verb{/authorize},
+\verb{/token}, \verb{/register}, and \verb{/jwks}. If \code{auth} is also \code{NULL}
+a matching resource-server config is derived automatically so a
+single process can both issue and verify its own bearer tokens.}
 
 \item{daemons}{Number of \code{mirai} daemons.}
 
