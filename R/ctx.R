@@ -60,10 +60,42 @@
       request_sampling_impl(x$.session, messages, model_preferences,
                             system_prompt, max_tokens, timeout)
     },
+    request_sampling_async = function(messages, model_preferences = NULL,
+                                      system_prompt = NULL,
+                                      max_tokens = 1024L,
+                                      ttl = 30,
+                                      poll_interval = 0.25,
+                                      total_timeout = 60) {
+      caps <- x$.session$client_capabilities %||% list()
+      if (is.null(caps$sampling)) {
+        stop("client did not declare sampling capability")
+      }
+      call_client_task(x$.session, "sampling/createMessage",
+        drop_nulls(list(messages = messages,
+                        modelPreferences = model_preferences,
+                        systemPrompt = system_prompt,
+                        maxTokens = max_tokens)),
+        ttl = ttl, poll_interval = poll_interval,
+        total_timeout = total_timeout)
+    },
     request_elicitation = function(message, requested_schema,
                                    timeout = 30) {
       request_elicitation_impl(x$.session, message, requested_schema,
                                timeout)
+    },
+    request_elicitation_async = function(message, requested_schema,
+                                         ttl = 30,
+                                         poll_interval = 0.25,
+                                         total_timeout = 60) {
+      caps <- x$.session$client_capabilities %||% list()
+      if (is.null(caps$elicitation)) {
+        stop("client did not declare elicitation capability")
+      }
+      call_client_task(x$.session, "elicitation/create",
+        list(message = message,
+             requestedSchema = requested_schema),
+        ttl = ttl, poll_interval = poll_interval,
+        total_timeout = total_timeout)
     },
     request_roots = function(timeout = 5) {
       if (!is.null(x$.session$roots_cache)) return(x$.session$roots_cache)

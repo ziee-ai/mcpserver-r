@@ -20,8 +20,22 @@ import {
   ElicitRequestSchema,
   ListRootsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
+import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import process from "node:process";
+
+// SEP-1686 task-augmented request schemas. The SDK does not expose
+// `tasks/get` / `tasks/result` schemas yet, so we declare minimal
+// zod stubs here to register handlers via `setRequestHandler`.
+const TasksGetRequestSchema = z.object({
+  method: z.literal("tasks/get"),
+  params: z.object({ taskId: z.string() }).passthrough(),
+});
+const TasksResultRequestSchema = z.object({
+  method: z.literal("tasks/result"),
+  params: z.object({ taskId: z.string() }).passthrough(),
+});
 
 function parseArgs(argv) {
   const out = { url: "http://127.0.0.1:3001/mcp", report: null };
@@ -66,12 +80,45 @@ async function main() {
         sampling: {},
         elicitation: {},
         roots: { listChanged: true },
+        tasks: {
+          requests: {
+            sampling: { createMessage: {} },
+            elicitation: { create: {} },
+          },
+        },
       },
     }
   );
 
+  // SEP-1686 client-side task store. Each task is "working" for a
+  // short delay, then transitions to "completed" and surfaces a
+  // canned result that mirrors the synchronous path's output.
+  const tasks = new Map();
+
+  function startTask(parkedResult) {
+    const taskId = randomUUID();
+    const createdAt = new Date().toISOString();
+    const task = {
+      taskId,
+      status: "working",
+      createdAt,
+      lastUpdatedAt: createdAt,
+      ttl: 30000,
+      pollInterval: 100,
+    };
+    tasks.set(taskId, { task, result: null });
+    setTimeout(() => {
+      const entry = tasks.get(taskId);
+      if (!entry) return;
+      entry.task.status = "completed";
+      entry.task.lastUpdatedAt = new Date().toISOString();
+      entry.result = parkedResult;
+    }, 150);
+    return task;
+  }
+
   client.setRequestHandler(CreateMessageRequestSchema, async (req) => {
-    return {
+    const result = {
       role: "assistant",
       content: {
         type: "text",
@@ -82,12 +129,22 @@ async function main() {
       model: "mock-model",
       stopReason: "endTurn",
     };
+    // Task-augmented variant: client returns CreateTaskResult and
+    // parks the real result for later retrieval via tasks/result.
+    if (req.params?.task) {
+      return { task: startTask(result) };
+    }
+    return result;
   });
   client.setRequestHandler(ElicitRequestSchema, async (req) => {
-    return {
+    const result = {
       action: "accept",
       content: { answer: "mock-answer", confidence: 0.9 },
     };
+    if (req.params?.task) {
+      return { task: startTask(result) };
+    }
+    return result;
   });
   client.setRequestHandler(ListRootsRequestSchema, async () => {
     return {
@@ -96,6 +153,25 @@ async function main() {
         { uri: "file:///workspace", name: "workspace" },
       ],
     };
+  });
+  client.setRequestHandler(TasksGetRequestSchema, async (req) => {
+    const entry = tasks.get(req.params.taskId);
+    if (!entry) {
+      throw new Error(`unknown taskId: ${req.params.taskId}`);
+    }
+    return { task: entry.task };
+  });
+  client.setRequestHandler(TasksResultRequestSchema, async (req) => {
+    const entry = tasks.get(req.params.taskId);
+    if (!entry) {
+      throw new Error(`unknown taskId: ${req.params.taskId}`);
+    }
+    if (entry.task.status !== "completed") {
+      throw new Error(
+        `task ${req.params.taskId} not yet completed (status=${entry.task.status})`
+      );
+    }
+    return entry.result;
   });
 
   const transport = new StreamableHTTPClientTransport(new URL(url), {
@@ -140,6 +216,17 @@ async function main() {
       temperature: 0.5,
     },
     "trigger-elicitation-request": { message: "Pick a colour" },
+    "trigger-sampling-request-async": {
+      prompt: "What is 5+5?",
+      maxTokens: 10,
+      ttl: 5,
+      pollInterval: 0.1,
+    },
+    "trigger-elicitation-request-async": {
+      message: "Pick a fruit",
+      ttl: 5,
+      pollInterval: 0.1,
+    },
     "get-roots-list": {},
   };
 

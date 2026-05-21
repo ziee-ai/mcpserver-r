@@ -246,6 +246,55 @@ build_conformance_server <- function() {
 
   mcpserver::on_initialized(srv, function(mcp, session) {
     caps <- session$client_capabilities %||% list()
+    if (!is.null(caps$tasks$requests$sampling$createMessage) &&
+        !is.null(caps$sampling)) {
+      mcpserver::add_capability(mcp, mcpserver::new_tool(
+        name = "test_sampling_async",
+        description = "Asks the client to sample via the task-augmented flow.",
+        input_schema = mcpserver::schema(list(
+          prompt = mcpserver::property_string(required = TRUE)
+        )),
+        bidirectional = TRUE,
+        handler = function(args, ctx) {
+          res <- tryCatch(ctx$request_sampling_async(
+            messages = list(list(role = "user",
+                                 content = list(type = "text",
+                                                text = args$prompt))),
+            max_tokens = 64L, ttl = 30, poll_interval = 0.1,
+            total_timeout = 60),
+            error = function(e) NULL)
+          if (is.null(res)) {
+            return(mcpserver::response_error("async sampling failed"))
+          }
+          mcpserver::response_text(
+            res$content$text %||% jsonlite::toJSON(res, auto_unbox = TRUE))
+        }
+      ))
+    }
+    if (!is.null(caps$tasks$requests$elicitation$create) &&
+        !is.null(caps$elicitation)) {
+      mcpserver::add_capability(mcp, mcpserver::new_tool(
+        name = "test_elicitation_async",
+        description = "Asks the client to elicit input via the task-augmented flow.",
+        input_schema = mcpserver::schema(list(
+          message = mcpserver::property_string(required = TRUE)
+        )),
+        bidirectional = TRUE,
+        handler = function(args, ctx) {
+          res <- tryCatch(ctx$request_elicitation_async(
+            message = args$message,
+            requested_schema = mcpserver::schema(list(
+              answer = mcpserver::property_string(required = TRUE))),
+            ttl = 30, poll_interval = 0.1, total_timeout = 60),
+            error = function(e) NULL)
+          if (is.null(res)) {
+            return(mcpserver::response_error("async elicitation failed"))
+          }
+          ans <- res$content$answer %||% res$answer %||% ""
+          mcpserver::response_text(sprintf("answer: %s", ans))
+        }
+      ))
+    }
     if (!is.null(caps$sampling)) {
       mcpserver::add_capability(mcp, mcpserver::new_tool(
         name = "test_sampling",

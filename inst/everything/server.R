@@ -597,6 +597,104 @@ build_everything_server <- function() {
       ))
     }
 
+    # SEP-1686 client-task requests. Server-side trigger tools that
+    # send the matching request with `params.task = { ttl }` and then
+    # drive the polling round-trip through `ctx$request_*_async()`.
+    if (!is.null(caps$tasks$requests$sampling$createMessage) &&
+        !is.null(caps$sampling)) {
+      mcpserver::add_capability(mcp, mcpserver::new_tool(
+        name = "trigger-sampling-request-async",
+        description = paste(
+          "Asks the client to sample an LLM completion using the",
+          "task-augmented (SEP-1686) flow: the server sends",
+          "sampling/createMessage with params.task = { ttl } and",
+          "polls tasks/get until the client reports completion."),
+        input_schema = mcpserver::schema(list(
+          prompt = mcpserver::property_string(
+            "Prompt to send to the LLM", required = TRUE),
+          maxTokens = mcpserver::property_integer(
+            "Maximum tokens", default = 100L),
+          systemPrompt = mcpserver::property_string(
+            "Optional system prompt"),
+          ttl = mcpserver::property_integer(
+            "Task retention window in seconds", default = 30L),
+          pollInterval = mcpserver::property_number(
+            "Polling interval in seconds", default = 0.25)
+        )),
+        annotations = list(title = "Trigger Sampling Request (Async)",
+                           readOnlyHint = TRUE, openWorldHint = TRUE),
+        bidirectional = TRUE,
+        handler = function(args, ctx) {
+          res <- tryCatch(ctx$request_sampling_async(
+            messages = list(list(
+              role = "user",
+              content = list(type = "text", text = args$prompt))),
+            system_prompt = args$systemPrompt,
+            max_tokens = as.integer(args$maxTokens %||% 100L),
+            ttl = as.integer(args$ttl %||% 30L),
+            poll_interval = as.numeric(args$pollInterval %||% 0.25),
+            total_timeout = max(60,
+              as.integer(args$ttl %||% 30L) * 2L)),
+            error = function(e) conditionMessage(e))
+          if (is.character(res)) {
+            return(mcpserver::response_error(
+              paste("async sampling request failed:", res)))
+          }
+          mcpserver::response_text(jsonlite::toJSON(
+            res, auto_unbox = TRUE, force = TRUE, pretty = TRUE))
+        }
+      ))
+    }
+
+    if (!is.null(caps$tasks$requests$elicitation$create) &&
+        !is.null(caps$elicitation)) {
+      mcpserver::add_capability(mcp, mcpserver::new_tool(
+        name = "trigger-elicitation-request-async",
+        description = paste(
+          "Asks the client to elicit structured input using the",
+          "task-augmented (SEP-1686) flow."),
+        input_schema = mcpserver::schema(list(
+          message = mcpserver::property_string(
+            "Question to ask the user", required = TRUE),
+          ttl = mcpserver::property_integer(
+            "Task retention window in seconds", default = 30L),
+          pollInterval = mcpserver::property_number(
+            "Polling interval in seconds", default = 0.25)
+        )),
+        annotations = list(title = "Trigger Elicitation Request (Async)",
+                           readOnlyHint = TRUE, openWorldHint = TRUE),
+        bidirectional = TRUE,
+        handler = function(args, ctx) {
+          res <- tryCatch(ctx$request_elicitation_async(
+            message = args$message,
+            requested_schema = mcpserver::schema(list(
+              answer = mcpserver::property_string(
+                "Free-text answer", required = TRUE),
+              confidence = mcpserver::property_number(
+                "Confidence 0..1", minimum = 0, maximum = 1)
+            )),
+            ttl = as.integer(args$ttl %||% 30L),
+            poll_interval = as.numeric(args$pollInterval %||% 0.25),
+            total_timeout = max(60,
+              as.integer(args$ttl %||% 30L) * 2L)),
+            error = function(e) conditionMessage(e))
+          if (is.character(res)) {
+            return(mcpserver::response_error(
+              paste("async elicitation request failed:", res)))
+          }
+          action <- res$action %||% "accept"
+          if (identical(action, "decline")) {
+            return(mcpserver::response_text("User declined."))
+          }
+          if (identical(action, "cancel")) {
+            return(mcpserver::response_text("User cancelled."))
+          }
+          ans <- res$content$answer %||% res$answer %||% ""
+          mcpserver::response_text(sprintf("You said: %s", ans))
+        }
+      ))
+    }
+
     if (!is.null(caps$roots)) {
       mcpserver::add_capability(mcp, mcpserver::new_tool(
         name = "get-roots-list",
