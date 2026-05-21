@@ -12,14 +12,17 @@ as_content <- function(x, type) {
 #' @param text Character scalar.
 #' @param annotations Optional MCP annotations list (e.g.
 #'   `list(audience = "user", priority = 0.5)`).
+#' @param meta Optional `_meta` object attached to this content block.
+#'   The block carries through to the wire untouched.
 #' @return A list with a `"text"` `type` tag, ready to be returned from a
 #'   tool, resource, or prompt handler.
 #' @export
 #' @examples
 #' response_text("hello world")
-response_text <- function(text, annotations = NULL) {
+response_text <- function(text, annotations = NULL, meta = NULL) {
   out <- list(type = "text", text = as.character(text))
   if (!is.null(annotations)) out$annotations <- annotations
+  if (!is.null(meta)) out$`_meta` <- meta
   out
 }
 

@@ -22,6 +22,16 @@ set_request_handler <- function(mcp, method, handler) {
   stopifnot(inherits(mcp, "McpServer"))
   stopifnot(is.character(method), length(method) == 1L)
   stopifnot(is.function(handler))
+  if (isTRUE(mcp$strict_capabilities)) {
+    caps <- mcp$capabilities()
+    method_root <- sub("/.*$", "", method)
+    if (!method_root %in% names(caps) &&
+        !method_root %in% c("notifications", "initialize", "ping")) {
+      stop(sprintf(
+        "strict_capabilities: cannot register handler for '%s' — no '%s' capability declared",
+        method, method_root))
+    }
+  }
   if (is.null(mcp$custom_request_handlers)) {
     mcp$custom_request_handlers <- new.env(parent = emptyenv())
   }

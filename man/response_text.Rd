@@ -4,13 +4,16 @@
 \alias{response_text}
 \title{Build a text content block}
 \usage{
-response_text(text, annotations = NULL)
+response_text(text, annotations = NULL, meta = NULL)
 }
 \arguments{
 \item{text}{Character scalar.}
 
 \item{annotations}{Optional MCP annotations list (e.g.
 \code{list(audience = "user", priority = 0.5)}).}
+
+\item{meta}{Optional \verb{_meta} object attached to this content block.
+The block carries through to the wire untouched.}
 }
 \value{
 A list with a \code{"text"} \code{type} tag, ready to be returned from a

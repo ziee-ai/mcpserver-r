@@ -21,11 +21,16 @@ jrpc_request <- function(method, params = NULL, id = NULL) {
 
 # Build a successful response envelope. An empty list result is coerced
 # to a JSON object (`{}`) rather than a JSON array (`[]`) to satisfy
-# strict MCP clients that validate the result shape.
-jrpc_response <- function(id, result) {
+# strict MCP clients that validate the result shape. The optional
+# `meta` argument attaches a `_meta` field to the result (when the
+# result is an object); ignored for atomic results.
+jrpc_response <- function(id, result, meta = NULL) {
   if (is.list(result) && length(result) == 0L &&
       is.null(names(result))) {
     result <- j_empty_obj()
+  }
+  if (!is.null(meta) && is.list(result)) {
+    result$`_meta` <- meta
   }
   list(jsonrpc = JSONRPC_VERSION, id = id, result = result)
 }

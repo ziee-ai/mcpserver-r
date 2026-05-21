@@ -20,6 +20,17 @@ McpServer <- R6::R6Class(
     on_close_hooks = NULL,
     on_error_hooks = NULL,
     task_store = NULL,
+    # When TRUE, attempts to register handlers for methods whose
+    # capability hasn't been declared raise. Mirrors TS
+    # Server.enforceStrictCapabilities.
+    strict_capabilities = FALSE,
+    # Optional pluggable schema validator (function returned by
+    # new_validator()). When NULL, falls back to validate_args().
+    schema_validator = NULL,
+    # Implementation extras (2025-11-25 BaseMetadata fields).
+    icons = NULL,
+    website_url = NULL,
+    description = NULL,
     # Free-form extension state. Sample servers (e.g. the bundled
     # everything-demo) stash their timer/toggle state here so the
     # core package keeps no reference to it.
@@ -134,6 +145,9 @@ McpServer <- R6::R6Class(
     server_info = function() {
       info <- list(name = self$name, version = self$version)
       if (!is.null(self$title)) info$title <- self$title
+      if (!is.null(self$description)) info$description <- self$description
+      if (!is.null(self$website_url)) info$websiteUrl <- self$website_url
+      if (!is.null(self$icons)) info$icons <- self$icons
       info
     }
   )
@@ -169,7 +183,12 @@ new_server <- function(name,
                        tools = list(),
                        resources = list(),
                        resource_templates = list(),
-                       prompts = list()) {
+                       prompts = list(),
+                       description = NULL,
+                       website_url = NULL,
+                       icons = NULL,
+                       strict_capabilities = FALSE,
+                       schema_validator = NULL) {
   srv <- McpServer$new(
     name = as.character(name),
     title = title %||% as.character(name),
@@ -177,6 +196,11 @@ new_server <- function(name,
     instructions = instructions,
     capabilities = capabilities
   )
+  srv$description <- description
+  srv$website_url <- website_url
+  srv$icons <- icons
+  srv$strict_capabilities <- isTRUE(strict_capabilities)
+  srv$schema_validator <- schema_validator
   for (t in tools) add_capability(srv, t)
   for (r in resources) add_capability(srv, r)
   for (t in resource_templates) add_capability(srv, t)

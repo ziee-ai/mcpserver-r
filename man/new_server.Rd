@@ -13,7 +13,12 @@ new_server(
   tools = list(),
   resources = list(),
   resource_templates = list(),
-  prompts = list()
+  prompts = list(),
+  description = NULL,
+  website_url = NULL,
+  icons = NULL,
+  strict_capabilities = FALSE,
+  schema_validator = NULL
 )
 }
 \arguments{
