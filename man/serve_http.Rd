@@ -16,6 +16,7 @@ serve_http(
   max_event_log = 1000L,
   auth = NULL,
   oauth_as = NULL,
+  admin = NULL,
   daemons = 4L,
   stateless = FALSE,
   enable_json_response = TRUE,
@@ -53,6 +54,18 @@ exposes \verb{/.well-known/oauth-authorization-server}, \verb{/authorize},
 \verb{/token}, \verb{/register}, and \verb{/jwks}. If \code{auth} is also \code{NULL}
 a matching resource-server config is derived automatically so a
 single process can both issue and verify its own bearer tokens.}
+
+\item{admin}{Optional admin REST + SPA configuration. Either \code{TRUE}
+(read \code{MCPSERVER_ADMIN_TOKEN} from the environment, reuse
+\code{oauth_as$store}), or a list with fields \code{bootstrap_token} (opaque
+string), \code{store} (\code{\link[=new_mcp_store]{new_mcp_store()}} result; defaults to
+\code{oauth_as$store}), \code{ui} (logical; serves the bundled React SPA at
+\verb{/admin/ui/*} when \code{TRUE}), \code{max_ttl} (max access-token ttl in
+seconds), and \code{ui_dist_dir} (override the bundled SPA path).
+When set, the server mounts \verb{/admin/healthz}, \verb{/admin/users},
+\verb{/admin/users/\{id\}}, \verb{/admin/users/\{id\}/tokens},
+\verb{/admin/tokens/mint}, \verb{/admin/tokens/\{jti\}/revoke} and (when
+\code{ui = TRUE}) the SPA static handler.}
 
 \item{daemons}{Number of \code{mirai} daemons.}
 

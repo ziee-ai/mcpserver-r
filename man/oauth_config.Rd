@@ -11,7 +11,8 @@ oauth_config(
   required_scopes = character(0L),
   introspection_url = NULL,
   introspection_basic = NULL,
-  leeway = 30L
+  leeway = 30L,
+  revocation_store = NULL
 )
 }
 \arguments{
@@ -31,6 +32,12 @@ be present.}
 \code{client_secret} used for HTTP Basic auth on the introspection call.}
 
 \item{leeway}{Clock-skew tolerance in seconds (default 30).}
+
+\item{revocation_store}{Optional access-token store (the \verb{$tokens}
+namespace of a \code{\link[=new_mcp_store]{new_mcp_store()}}). When set, validated JWTs are
+additionally checked against the store: tokens missing a matching
+\code{jti} row, or with \code{revoked = TRUE}, are rejected. Leave \code{NULL} for
+external-IdP scenarios where \code{jti} may not be present.}
 }
 \value{
 A list with class \code{"mcp_oauth_config"}.

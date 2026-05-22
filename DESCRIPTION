@@ -31,8 +31,10 @@ Imports:
     promises (>= 1.2.0),
     rlang (>= 1.1.0)
 Suggests:
+    DBI (>= 1.2.0),
     pkgload,
     processx,
+    RSQLite (>= 2.3.0),
     testthat (>= 3.0.0),
     withr
 Config/testthat/edition: 3

@@ -18,7 +18,8 @@ oauth_server_config(
   consent_html_fn = NULL,
   client_store = new_oauth_store(),
   code_store = new_oauth_store(),
-  token_store = new_oauth_store()
+  token_store = new_oauth_store(),
+  store = NULL
 )
 }
 \arguments{
@@ -54,6 +55,14 @@ consent page HTML. Only consulted when \code{auto_consent = FALSE}.}
 
 \item{client_store, code_store, token_store}{Pluggable in-memory
 stores; defaults are \code{new_oauth_store()}.}
+
+\item{store}{Optional \code{\link[=new_mcp_store]{new_mcp_store()}} result. When supplied, the
+AS gains a per-user identity model: tokens minted via
+\code{\link[=oauth_mint_user_token]{oauth_mint_user_token()}} carry the user's id in the \code{sub} claim
+plus a fresh \code{jti} whose row in \code{store$tokens} is checked on
+every request. Leaving this \code{NULL} preserves the legacy
+anonymous-subject behavior used by the \verb{/authorize} + \verb{/token}
+demo flow.}
 }
 \value{
 A list of class \code{"mcp_oauth_server_config"} with helper
