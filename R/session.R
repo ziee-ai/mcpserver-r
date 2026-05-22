@@ -19,6 +19,9 @@ Session <- R6::R6Class(
     roots_cache = NULL,
     auth_subject = NULL,
     auth_scopes = NULL,
+    # Resolved user record (mcp_users row) when the subject matches a
+    # user in the configured admin store, otherwise NULL.
+    user = NULL,
     # Per-call HTTP request metadata (headers / uri / method). Updated
     # on every POST so tool handlers can read it via ctx$request_info.
     request_info = NULL,
@@ -183,6 +186,17 @@ make_ctx <- function(session, msg = NULL) {
   ctx$client_capabilities <- session$client_capabilities
   ctx$auth_subject <- session$auth_subject
   ctx$auth_scopes <- session$auth_scopes
+  # User identity fields, derived from session$user when an admin store
+  # is configured and the JWT's `sub` resolves to a user record.
+  if (!is.null(session$user)) {
+    ctx$user_id   <- session$user$id
+    ctx$user_name <- session$user$username
+    ctx$is_admin  <- isTRUE(session$user$is_admin)
+  } else {
+    ctx$user_id   <- NULL
+    ctx$user_name <- NULL
+    ctx$is_admin  <- FALSE
+  }
   ctx$progress_token <- msg$params$`_meta`$progressToken
   # Full incoming `_meta` (minus progressToken which is broken out).
   ctx$msg_meta <- {
@@ -194,4 +208,22 @@ make_ctx <- function(session, msg = NULL) {
   ctx$.msg     <- msg
   class(ctx) <- c("McpCtx", "environment")
   ctx
+}
+
+# Resolve the AS-issued subject to a user record via the admin store
+# attached to `state`. Returns NULL when no store is configured, or
+# the subject isn't a known user. Cached on the session.
+session_resolve_user <- function(session, state) {
+  store <- if (is.null(state$admin)) NULL else state$admin$store
+  if (is.null(store) || is.null(session$auth_subject)) {
+    session$user <- NULL
+    return(NULL)
+  }
+  if (!is.null(session$user) &&
+      identical(session$user$id, session$auth_subject)) {
+    return(session$user)
+  }
+  u <- safely(store$users$get(session$auth_subject), log = FALSE)
+  session$user <- u
+  u
 }

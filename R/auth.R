@@ -21,6 +21,11 @@
 #' @param introspection_basic Optional named list with `client_id` and
 #'   `client_secret` used for HTTP Basic auth on the introspection call.
 #' @param leeway Clock-skew tolerance in seconds (default 30).
+#' @param revocation_store Optional access-token store (the `$tokens`
+#'   namespace of a [new_mcp_store()]). When set, validated JWTs are
+#'   additionally checked against the store: tokens missing a matching
+#'   `jti` row, or with `revoked = TRUE`, are rejected. Leave `NULL` for
+#'   external-IdP scenarios where `jti` may not be present.
 #' @return A list with class `"mcp_oauth_config"`.
 #' @export
 oauth_config <- function(issuer,
@@ -29,7 +34,8 @@ oauth_config <- function(issuer,
                          required_scopes = character(0L),
                          introspection_url = NULL,
                          introspection_basic = NULL,
-                         leeway = 30L) {
+                         leeway = 30L,
+                         revocation_store = NULL) {
   cfg <- list(
     issuer = as.character(issuer),
     audience = as.character(audience),
@@ -38,6 +44,7 @@ oauth_config <- function(issuer,
     introspection_url = introspection_url,
     introspection_basic = introspection_basic,
     leeway = as.integer(leeway),
+    revocation_store = revocation_store,
     jwks_cache = new.env(parent = emptyenv()),
     introspection_cache = new.env(parent = emptyenv())
   )
@@ -141,6 +148,20 @@ oauth_verify_jwt <- function(cfg, token) {
       !all(cfg$required_scopes %in% scopes)) {
     return(list(ok = FALSE, reason = "insufficient_scope",
                 scopes = scopes))
+  }
+  # Revocation check (instant revoke for AS-issued JWTs). When the
+  # caller configured a revocation_store, every accepted JWT must
+  # carry a `jti` that resolves to a non-revoked row.
+  if (!is.null(cfg$revocation_store)) {
+    jti <- decoded$jti
+    if (is.null(jti) || !nzchar(jti)) {
+      return(list(ok = FALSE, reason = "invalid_token"))
+    }
+    row <- safely(cfg$revocation_store$get(jti), log = FALSE)
+    if (is.null(row) || isTRUE(row$revoked)) {
+      return(list(ok = FALSE, reason = "invalid_token"))
+    }
+    safely(cfg$revocation_store$touch_last_used(jti), log = FALSE)
   }
   list(ok = TRUE,
        subject = decoded$sub,

@@ -12,3 +12,5 @@
 ^\.lintr$
 ^inst/parity/node_modules$
 ^inst/parity/package-lock\.json$
+^web-admin$
+^\.claude$

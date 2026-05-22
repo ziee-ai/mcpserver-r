@@ -47,6 +47,13 @@
 #'   consent page HTML. Only consulted when `auto_consent = FALSE`.
 #' @param client_store,code_store,token_store Pluggable in-memory
 #'   stores; defaults are `new_oauth_store()`.
+#' @param store Optional [new_mcp_store()] result. When supplied, the
+#'   AS gains a per-user identity model: tokens minted via
+#'   [oauth_mint_user_token()] carry the user's id in the `sub` claim
+#'   plus a fresh `jti` whose row in `store$tokens` is checked on
+#'   every request. Leaving this `NULL` preserves the legacy
+#'   anonymous-subject behavior used by the `/authorize` + `/token`
+#'   demo flow.
 #' @return A list of class `"mcp_oauth_server_config"` with helper
 #'   accessors. Pass to [serve_http()] via the `oauth_as` argument.
 #' @export
@@ -64,11 +71,15 @@ oauth_server_config <- function(issuer,
                                 consent_html_fn = NULL,
                                 client_store  = new_oauth_store(),
                                 code_store    = new_oauth_store(),
-                                token_store   = new_oauth_store()) {
+                                token_store   = new_oauth_store(),
+                                store         = NULL) {
   issuer <- sub("/+$", "", as.character(issuer))
   validate_issuer_url(issuer)
   if (is.null(signing_key)) {
     signing_key <- openssl::rsa_keygen(2048L)
+  }
+  if (!is.null(store) && !inherits(store, "mcp_store")) {
+    stop("store must be a new_mcp_store() result", call. = FALSE)
   }
   cfg <- list(
     issuer        = issuer,
@@ -84,10 +95,68 @@ oauth_server_config <- function(issuer,
     consent_html_fn = consent_html_fn,
     client_store  = client_store,
     code_store    = code_store,
-    token_store   = token_store
+    token_store   = token_store,
+    store         = store
   )
   class(cfg) <- "mcp_oauth_server_config"
   cfg
+}
+
+#' Mint a user-bound access token
+#'
+#' Signs an RS256 JWT with `sub = user_id` and a fresh `jti`, and
+#' persists the metadata row in `cfg$store$tokens` for instant
+#' revocation. Requires `cfg` to have been built with a `store` arg.
+#'
+#' @param cfg An [oauth_server_config()] result with a `store` set.
+#' @param user_id Id of an existing user in `cfg$store$users`.
+#' @param scopes Character vector of scopes to embed in the token.
+#' @param ttl Lifetime in seconds (defaults to `cfg$ttl_access`).
+#' @param name Human label stored alongside the token row (e.g.
+#'   `"ci-runner"`). Must be unique per user.
+#' @return A list with `jti`, `token` (the JWT string), and
+#'   `expires_at` (ISO 8601, UTC). The JWT is returned **once**; only
+#'   metadata is persisted server-side.
+#' @export
+oauth_mint_user_token <- function(cfg, user_id, scopes,
+                                  ttl = NULL, name = "token") {
+  stopifnot(inherits(cfg, "mcp_oauth_server_config"))
+  if (is.null(cfg$store)) {
+    stop("oauth_server_config(store=) is required to mint user tokens",
+         call. = FALSE)
+  }
+  user <- cfg$store$users$get(user_id)
+  if (is.null(user)) {
+    stop(sprintf("no such user: %s", user_id), call. = FALSE)
+  }
+  ttl <- if (is.null(ttl)) cfg$ttl_access else as.integer(ttl)
+  if (ttl <= 0L) stop("ttl must be positive", call. = FALSE)
+  now <- as.integer(Sys.time())
+  jti <- new_uuid()
+  scope_str <- paste(as.character(scopes), collapse = " ")
+  claim <- jose::jwt_claim(
+    iss   = cfg$issuer,
+    aud   = cfg$audience,
+    sub   = user_id,
+    exp   = as.integer(now + ttl),
+    nbf   = as.integer(now),
+    iat   = as.integer(now),
+    jti   = jti,
+    scope = scope_str
+  )
+  jwt <- jose::jwt_encode_sig(claim, key = cfg$signing_key,
+                              header = list(kid = cfg$kid))
+  expires_at <- format(as.POSIXct(now + ttl, origin = "1970-01-01",
+                                  tz = "UTC"),
+                       "%Y-%m-%dT%H:%M:%OS3Z", tz = "UTC")
+  cfg$store$tokens$add(list(
+    jti        = jti,
+    user_id    = user_id,
+    name       = name,
+    scopes     = as.character(scopes),
+    expires_at = expires_at
+  ))
+  list(jti = jti, token = jwt, expires_at = expires_at)
 }
 
 # Validate an AS issuer URL per RFC 8414 §3:

@@ -40,6 +40,17 @@
 #'   `/token`, `/register`, and `/jwks`. If `auth` is also `NULL`
 #'   a matching resource-server config is derived automatically so a
 #'   single process can both issue and verify its own bearer tokens.
+#' @param admin Optional admin REST + SPA configuration. Either `TRUE`
+#'   (read `MCPSERVER_ADMIN_TOKEN` from the environment, reuse
+#'   `oauth_as$store`), or a list with fields `bootstrap_token` (opaque
+#'   string), `store` ([new_mcp_store()] result; defaults to
+#'   `oauth_as$store`), `ui` (logical; serves the bundled React SPA at
+#'   `/admin/ui/*` when `TRUE`), `max_ttl` (max access-token ttl in
+#'   seconds), and `ui_dist_dir` (override the bundled SPA path).
+#'   When set, the server mounts `/admin/healthz`, `/admin/users`,
+#'   `/admin/users/{id}`, `/admin/users/{id}/tokens`,
+#'   `/admin/tokens/mint`, `/admin/tokens/{jti}/revoke` and (when
+#'   `ui = TRUE`) the SPA static handler.
 #' @param daemons Number of `mirai` daemons.
 #' @param stateless When `TRUE`, the server does not allocate or
 #'   validate `Mcp-Session-Id` headers and every request is treated as
@@ -71,6 +82,7 @@ serve_http <- function(mcp,
                        max_event_log = 1000L,
                        auth = NULL,
                        oauth_as = NULL,
+                       admin = NULL,
                        daemons = 4L,
                        stateless = FALSE,
                        enable_json_response = TRUE,
@@ -96,12 +108,28 @@ serve_http <- function(mcp,
         stop("oauth_as and auth disagree on issuer/audience")
       }
     }
+    # Thread the AS's token store into the resource-server verifier so
+    # the verifier rejects JWTs whose `jti` is revoked or unknown. The
+    # verifier preserves the no-revocation_store branch when no store
+    # is configured (external-IdP parity).
+    if (!is.null(oauth_as$store) && is.null(auth$revocation_store)) {
+      auth$revocation_store <- oauth_as$store$tokens
+    }
   }
+
+  # Normalize `admin` argument:
+  #   admin = NULL              -> no admin surface
+  #   admin = TRUE              -> read MCPSERVER_ADMIN_TOKEN from env;
+  #                                reuse oauth_as$store if available
+  #   admin = list(bootstrap_token = ..., store = ..., ui = ...,
+  #                max_ttl = ...) -> explicit configuration
+  admin_cfg <- normalize_admin_config(admin, oauth_as)
 
   state <- new.env(parent = emptyenv())
   state$server <- mcp
   state$auth   <- auth
   state$oauth_as <- oauth_as
+  state$admin <- admin_cfg
   state$allowed_origins <- allowed_origins
   state$allowed_hosts <- allowed_hosts
   state$require_origin <- isTRUE(require_origin)
@@ -153,6 +181,13 @@ serve_http <- function(mcp,
       nanonext::handler("/jwks",
                         oauth_as_jwks_handler(oauth_as),
                         method = "GET")))
+  }
+  # Admin REST API + (optionally) the bundled SPA. Mounted under
+  # /admin/ via prefix match; require_admin() gates everything.
+  if (!is.null(admin_cfg)) {
+    handlers <- c(handlers, list(
+      nanonext::handler("/admin", admin_router(state),
+                        method = "*", prefix = TRUE)))
   }
   url <- sprintf("%s://%s:%d",
                  if (is.null(tls)) "http" else "https",
@@ -417,6 +452,7 @@ http_post_handler <- function(state) {
       ephemeral <- new_ephemeral_session(state$server)
       ephemeral$auth_subject <- auth_res$subject
       ephemeral$auth_scopes <- auth_res$scopes
+      session_resolve_user(ephemeral, state)
       ephemeral$request_info <- list(
         method = req$method, uri = req$uri, headers = req$headers)
       out <- route_message(state$server, ephemeral, msg)
@@ -440,6 +476,7 @@ http_post_handler <- function(state) {
                    inherits = FALSE)
     session$auth_subject <- auth_res$subject
     session$auth_scopes <- auth_res$scopes
+    session_resolve_user(session, state)
     # Make raw HTTP request metadata available to handlers via ctx.
     session$request_info <- list(
       method = req$method,
@@ -691,6 +728,7 @@ new_http_session <- function(state, session_id, auth_res) {
                    max_event_log = state$max_event_log)
   s$auth_subject <- auth_res$subject
   s$auth_scopes <- auth_res$scopes
+  session_resolve_user(s, state)
   s
 }
 
@@ -700,4 +738,39 @@ schedule_keepalive <- function(conn) {
       schedule_keepalive(conn)
     }
   }, delay = 15)
+}
+
+# Normalize the `admin =` argument to serve_http(). Returns NULL when
+# admin endpoints should NOT be mounted, or a list with stable shape:
+#   list(bootstrap_token, store, ui, max_ttl, ui_dist_dir)
+normalize_admin_config <- function(admin, oauth_as) {
+  if (is.null(admin) || isFALSE(admin)) return(NULL)
+  user_cfg <- if (isTRUE(admin)) list() else as.list(admin)
+
+  bootstrap_token <- user_cfg$bootstrap_token %||%
+    Sys.getenv("MCPSERVER_ADMIN_TOKEN", unset = "")
+  if (!nzchar(bootstrap_token)) {
+    stop("serve_http(admin = ...) requires either ",
+         "MCPSERVER_ADMIN_TOKEN env var, or admin$bootstrap_token in ",
+         "the list. Set one before starting the server.",
+         call. = FALSE)
+  }
+  store <- user_cfg$store
+  if (is.null(store) && !is.null(oauth_as)) store <- oauth_as$store
+  if (is.null(store)) {
+    stop("serve_http(admin = ...) requires a store (either admin$store ",
+         "or oauth_as$store). Build one with new_mcp_store().",
+         call. = FALSE)
+  }
+  if (!inherits(store, "mcp_store")) {
+    stop("admin$store must be a new_mcp_store() result", call. = FALSE)
+  }
+  list(
+    bootstrap_token = as.character(bootstrap_token),
+    store           = store,
+    ui              = isTRUE(user_cfg$ui),
+    max_ttl         = user_cfg$max_ttl %||%
+                      (60L * 60L * 24L * 365L),
+    ui_dist_dir     = user_cfg$ui_dist_dir
+  )
 }
