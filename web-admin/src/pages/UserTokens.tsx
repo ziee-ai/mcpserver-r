@@ -173,9 +173,19 @@ export default function UserTokens() {
               render: (v) => v ?? "—" },
             {
               title: "Status",
-              dataIndex: "revoked",
-              render: (v) =>
-                v ? <Tag color="red">revoked</Tag> : <Tag color="green">active</Tag>,
+              render: (_, t: Token) => {
+                if (t.revoked) return <Tag color="red">revoked</Tag>;
+                const expired =
+                  !!t.expires_at &&
+                  new Date(t.expires_at).getTime() <= Date.now();
+                return expired ? (
+                  <Tag color="orange" data-testid="status-expired">
+                    expired
+                  </Tag>
+                ) : (
+                  <Tag color="green">active</Tag>
+                );
+              },
             },
             {
               title: "Actions",
