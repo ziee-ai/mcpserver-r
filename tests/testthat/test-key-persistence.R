@@ -11,7 +11,9 @@ test_that("key is generated and written (0600) when key_path is absent", {
   key <- mcpserver:::load_or_create_signing_key(kp)
   expect_true(file.exists(kp))
   expect_true(inherits(key, "key") || inherits(key, "rsa"))
-  # 0600 == owner read/write only
+  # 0600 == owner read/write only. Windows has no POSIX permission bits
+  # (file.mode() reports 666 regardless of Sys.chmod), so assert on Unix only.
+  skip_on_os("windows")
   expect_equal(as.character(file.mode(kp)), "600")
 })
 
