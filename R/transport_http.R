@@ -22,6 +22,12 @@
 #' `Last-Event-ID` on `GET` triggers replay of events appended after that
 #' id from a per-session ring buffer capped by `max_event_log`.
 #'
+#' Requests are served concurrently: tool/resource/prompt handlers run in
+#' `mirai` daemons and the `POST` reply is streamed back when the handler
+#' resolves, so a slow call from one client does not block other clients.
+#' (Tools that themselves call back to the client — sampling, elicitation,
+#' roots — still run on the transport thread.)
+#'
 #' @param mcp An `McpServer`.
 #' @param host Address to bind to. Default `"127.0.0.1"`.
 #' @param port TCP port.
@@ -141,7 +147,8 @@ serve_http <- function(mcp,
   state$onsessionclosed <- onsessionclosed
 
   handlers <- list(
-    nanonext::handler(path, http_post_handler(state),  method = "POST"),
+    nanonext::handler_stream(path, http_post_stream_handler(state),
+                             method = "POST"),
     nanonext::handler_stream(path, http_get_handler(state),
                              on_close = http_stream_on_close(state),
                              method = "GET"),
@@ -270,9 +277,42 @@ http_make_response <- function(status, body = NULL,
   if (isTRUE(json)) {
     hd <- c(hd, c("Content-Type" = "application/json"))
   }
+  # nanonext does NOT emit a Content-Length for a bodyless response, so
+  # HTTP/1.1 keep-alive clients hang waiting for a body that never comes
+  # (e.g. the 202 for notifications/initialized, 204 for DELETE, admin
+  # 204/403). Advertise Content-Length: 0 ourselves whenever the body is
+  # empty so the client knows the response is complete.
+  empty <- is.null(body) ||
+    (is.character(body) && sum(nchar(body, type = "bytes")) == 0L) ||
+    (is.raw(body) && length(body) == 0L)
+  if (empty && !("Content-Length" %in% names(hd))) {
+    hd <- c(hd, c("Content-Length" = "0"))
+  }
   out <- list(status = as.integer(status), headers = hd)
   if (!is.null(body)) out$body <- body
   out
+}
+
+# Write an http_make_response()-style list onto a `handler_stream()`
+# connection. POST replies go out this way so they can be produced
+# asynchronously (from a promise continuation) long after `on_request`
+# returned, without blocking the event loop. The body is always sent --
+# even when empty -- before close, otherwise the client sees an empty
+# reply. `handler_stream` frames the response with chunked transfer
+# encoding, so any caller-supplied `Content-Length` is dropped to avoid a
+# conflicting framing header.
+respond_stream <- function(conn, resp) {
+  safely({
+    conn$set_status(resp$status %||% 200L)
+    hd <- resp$headers %||% character(0L)
+    for (nm in names(hd)) {
+      if (identical(tolower(nm), "content-length")) next
+      conn$set_header(nm, hd[[nm]])
+    }
+    conn$send(resp$body %||% "")
+    conn$close()
+  }, log = TRUE)
+  invisible()
 }
 
 # Build a JSON-RPC error envelope as the response body for transport-level
@@ -354,40 +394,76 @@ post_authenticate <- function(state, req) {
   list(ok = FALSE, reason = reason)
 }
 
-http_post_handler <- function(state) {
-  function(req) {
+# POST handler, served over a streaming connection so async tool/resource
+# /prompt results (which run in mirai daemons) can be returned *after*
+# `on_request` returns, instead of blocking the single R thread in a
+# busy-wait. While one request's tool runs in its daemon, the event loop
+# stays free to accept and serve other clients -- so a second client is no
+# longer locked behind the first.
+http_post_stream_handler <- function(state) {
+  function(conn, req) {
+    reply <- function(resp) respond_stream(conn, resp)
+    json_envelope <- function(out, extra_headers = NULL) {
+      reply(http_make_response(200L,
+        body = jrpc_encode(out),
+        headers = c(extra_headers, c("Content-Type" = "application/json"))))
+    }
+    # Schedule `json_envelope(value)` when an async marker resolves, or an
+    # internal-error envelope on rejection -- without blocking. A 120s
+    # watchdog guarantees a reply (and frees the connection) even if the
+    # daemon never settles; `once()` makes resolve / reject / timeout
+    # mutually exclusive so the connection is written exactly once.
+    settle_async <- function(out, session, id, extra_headers = NULL) {
+      done <- FALSE
+      once <- function(resp) {
+        if (done) return(invisible())
+        done <<- TRUE
+        json_envelope(resp$result, extra_headers)
+      }
+      err_envelope <- function(message) {
+        jrpc_error(out$.id %||% id, jrpc_codes$internal_error, message)
+      }
+      promises::then(finalize_async(out, state$server, session),
+        onFulfilled = function(v) once(list(result = v)),
+        onRejected = function(e) once(list(result =
+          err_envelope(conditionMessage(e)))))
+      later::later(function() once(list(result =
+        err_envelope("tool timed out"))), delay = 120)
+      invisible()
+    }
+
     if (!validate_origin(state, req)) {
-      return(http_jsonrpc_error(403L, -32603, "bad origin"))
+      return(reply(http_jsonrpc_error(403L, -32603, "bad origin")))
     }
     if (!validate_host(state, req)) {
-      return(http_jsonrpc_error(403L, -32603, "bad host"))
+      return(reply(http_jsonrpc_error(403L, -32603, "bad host")))
     }
     if (!check_protocol_version(req)) {
-      return(http_jsonrpc_error(400L, -32602,
-        "unsupported MCP-Protocol-Version"))
+      return(reply(http_jsonrpc_error(400L, -32602,
+        "unsupported MCP-Protocol-Version")))
     }
     if (!check_accept(req)) {
-      return(http_jsonrpc_error(406L, -32602,
-        "Accept must include application/json and text/event-stream"))
+      return(reply(http_jsonrpc_error(406L, -32602,
+        "Accept must include application/json and text/event-stream")))
     }
     if (!check_content_type(req)) {
-      return(http_jsonrpc_error(415L, -32602,
-        "Content-Type must be application/json"))
+      return(reply(http_jsonrpc_error(415L, -32602,
+        "Content-Type must be application/json")))
     }
     auth_res <- post_authenticate(state, req)
     if (!isTRUE(auth_res$ok)) {
       if (identical(auth_res$reason, "insufficient_scope")) {
-        return(http_forbidden(state,
-                              scope = state$auth$required_scopes))
+        return(reply(http_forbidden(state,
+                              scope = state$auth$required_scopes)))
       }
-      return(http_unauthorized(state))
+      return(reply(http_unauthorized(state)))
     }
 
     body_text <- if (is.null(req$body)) "" else rawToChar(req$body)
     msg <- jrpc_decode(body_text)
     if (is.null(msg)) {
-      return(http_jsonrpc_error(400L, jrpc_codes$parse_error,
-                                "parse error"))
+      return(reply(http_jsonrpc_error(400L, jrpc_codes$parse_error,
+                                "parse error")))
     }
 
     # JSON-RPC batch: a top-level array of envelopes. We process each
@@ -402,18 +478,16 @@ http_post_handler <- function(state) {
     if (is_init && isTRUE(state$stateless)) {
       ephemeral <- new_ephemeral_session(state$server)
       out <- route_message(state$server, ephemeral, msg)
-      return(http_make_response(200L,
-        body = jrpc_encode(out),
-        headers = c("MCP-Protocol-Version" = mcp_protocol_version(),
-                    "Content-Type" = "application/json")))
+      return(json_envelope(out,
+        c("MCP-Protocol-Version" = mcp_protocol_version())))
     }
     if (is_init) {
       # Reject re-initialization on an already-active session.
       if (!is.null(session_id) &&
           exists(session_id, envir = state$server$sessions,
                  inherits = FALSE)) {
-        return(http_jsonrpc_error(400L, jrpc_codes$invalid_request,
-          "Server already initialized for this session"))
+        return(reply(http_jsonrpc_error(400L, jrpc_codes$invalid_request,
+          "Server already initialized for this session")))
       }
       session_id <- new_uuid()
       session <- new_http_session(state, session_id, auth_res)
@@ -426,25 +500,9 @@ http_post_handler <- function(state) {
                              "MCP-Protocol-Version" = mcp_protocol_version())
       if (is.list(out) && isTRUE(out$.async)) {
         # Should not happen for initialize; safety net.
-        env_f <- new.env(parent = emptyenv()); env_f$done <- FALSE
-        promises::then(finalize_async(out, state$server, session),
-                       onFulfilled = function(v) {
-                         env_f$value <- v; env_f$done <- TRUE
-                       },
-                       onRejected = function(e) {
-                         env_f$value <- NULL; env_f$done <- TRUE
-                       })
-        t0 <- Sys.time()
-        while (!isTRUE(env_f$done) &&
-               difftime(Sys.time(), t0, units = "secs") < 5) {
-          later::run_now(timeoutSecs = 0.05)
-        }
-        out <- env_f$value %||% jrpc_response(msg$id, list())
+        return(settle_async(out, session, msg$id, env_extra_headers))
       }
-      return(http_make_response(200L,
-                                body = jrpc_encode(out),
-                                headers = c(env_extra_headers,
-                                            c("Content-Type" = "application/json"))))
+      return(json_envelope(out, env_extra_headers))
     }
 
     # Stateless mode: handle every request without session state.
@@ -457,20 +515,18 @@ http_post_handler <- function(state) {
         method = req$method, uri = req$uri, headers = req$headers)
       out <- route_message(state$server, ephemeral, msg)
       if (is.null(out)) {
-        return(http_make_response(202L,
-          headers = c("Content-Type" = "application/json")))
+        return(reply(http_make_response(202L,
+          headers = c("Content-Type" = "application/json"))))
       }
       if (is.list(out) && isTRUE(out$.async)) {
-        out <- drive_async_to_completion(out, state$server, ephemeral)
+        return(settle_async(out, ephemeral, msg$id))
       }
-      return(http_make_response(200L,
-        body = jrpc_encode(out),
-        headers = c("Content-Type" = "application/json")))
+      return(json_envelope(out))
     }
     if (is.null(session_id) ||
         !exists(session_id, envir = state$server$sessions, inherits = FALSE)) {
-      return(http_make_response(404L,
-        body = '{"error":"unknown session"}', json = TRUE))
+      return(reply(http_make_response(404L,
+        body = '{"error":"unknown session"}', json = TRUE)))
     }
     session <- get(session_id, envir = state$server$sessions,
                    inherits = FALSE)
@@ -484,73 +540,58 @@ http_post_handler <- function(state) {
       headers = req$headers)
 
     if (is_batch) {
-      responses <- list()
-      for (m in msg) {
-        out <- route_message(state$server, session, m)
-        if (is.null(out)) next  # notifications / responses are bookkeeping
-        if (is.list(out) && isTRUE(out$.async)) {
-          env_f <- new.env(parent = emptyenv()); env_f$done <- FALSE
-          promises::then(finalize_async(out, state$server, session),
-                         onFulfilled = function(v) {
-                           env_f$value <- v; env_f$done <- TRUE
-                         },
-                         onRejected = function(e) {
-                           env_f$value <- jrpc_error(out$.id %||% m$id,
-                                                     jrpc_codes$internal_error,
-                                                     conditionMessage(e))
-                           env_f$done <- TRUE
-                         })
-          deadline <- Sys.time() + 120
-          while (!isTRUE(env_f$done) && Sys.time() < deadline) {
-            later::run_now(timeoutSecs = 0.05)
-          }
-          out <- env_f$value
-        }
-        responses <- c(responses, list(out))
-      }
-      if (length(responses) == 0L) {
-        return(http_make_response(202L,
-          headers = c("Content-Type" = "application/json")))
-      }
-      return(http_make_response(200L,
-        body = jrpc_encode(responses),
-        headers = c("Content-Type" = "application/json")))
+      return(http_post_batch(state, session, msg, reply))
     }
 
     kind <- jrpc_kind(msg)
     if (kind == "notification" || kind == "response") {
       route_message(state$server, session, msg)
-      return(http_make_response(202L,
-                                headers = c("Content-Type" = "application/json")))
+      return(reply(http_make_response(202L,
+                                headers = c("Content-Type" = "application/json"))))
     }
     out <- route_message(state$server, session, msg)
     if (is.list(out) && isTRUE(out$.async)) {
-      # Block briefly waiting for the promise to resolve; user code runs
-      # in the daemon. For simplicity we synchronously poll the promise.
-      env_final <- new.env(parent = emptyenv())
-      env_final$done <- FALSE
-      promises::then(finalize_async(out, state$server, session),
-                     onFulfilled = function(v) {
-                       env_final$value <- v; env_final$done <- TRUE
-                     },
-                     onRejected = function(e) {
-                       env_final$value <- jrpc_error(out$.id %||% msg$id,
-                                                     jrpc_codes$internal_error,
-                                                     conditionMessage(e))
-                       env_final$done <- TRUE
-                     })
-      deadline <- Sys.time() + 120
-      while (!isTRUE(env_final$done) && Sys.time() < deadline) {
-        later::run_now(timeoutSecs = 0.05)
-      }
-      out <- env_final$value %||% jrpc_error(msg$id,
-                                             jrpc_codes$internal_error,
-                                             "tool timed out")
+      return(settle_async(out, session, msg$id))
     }
-    http_make_response(200L,
-                      body = jrpc_encode(out),
-                      headers = c("Content-Type" = "application/json"))
+    json_envelope(out)
   }
+}
+
+# Process a JSON-RPC batch without blocking: each entry that expects a
+# result yields a promise (async tool calls run concurrently in their
+# daemons); when all settle we send the array back in request order. A
+# batch of pure notifications/responses gets a 202.
+http_post_batch <- function(state, session, msg, reply) {
+  proms <- list()
+  for (m in msg) {
+    out <- route_message(state$server, session, m)
+    if (is.null(out)) next  # notifications / responses are bookkeeping
+    if (is.list(out) && isTRUE(out$.async)) {
+      local({
+        mm <- m; oo <- out
+        proms[[length(proms) + 1L]] <<- promises::then(
+          finalize_async(oo, state$server, session),
+          onFulfilled = function(v) v,
+          onRejected = function(e) jrpc_error(oo$.id %||% mm$id,
+            jrpc_codes$internal_error, conditionMessage(e)))
+      })
+    } else {
+      proms[[length(proms) + 1L]] <- promises::promise_resolve(out)
+    }
+  }
+  if (length(proms) == 0L) {
+    return(reply(http_make_response(202L,
+      headers = c("Content-Type" = "application/json"))))
+  }
+  promises::then(promises::promise_all(.list = proms),
+    onFulfilled = function(results) {
+      reply(http_make_response(200L,
+        body = jrpc_encode(unname(results)),
+        headers = c("Content-Type" = "application/json")))
+    },
+    onRejected = function(e) reply(http_jsonrpc_error(200L,
+      jrpc_codes$internal_error, conditionMessage(e))))
+  invisible()
 }
 
 http_get_handler <- function(state) {
@@ -624,27 +665,6 @@ new_ephemeral_session <- function(server) {
               max_event_log = 1L)
 }
 
-# Drive an async marker to completion synchronously by polling the
-# later loop. Returns the final JSON-RPC envelope.
-drive_async_to_completion <- function(marker, server, session,
-                                      deadline_s = 120) {
-  env_f <- new.env(parent = emptyenv()); env_f$done <- FALSE
-  promises::then(finalize_async(marker, server, session),
-    onFulfilled = function(v) { env_f$value <- v; env_f$done <- TRUE },
-    onRejected = function(e) {
-      env_f$value <- jrpc_error(marker$.id %||% NULL,
-                                jrpc_codes$internal_error,
-                                conditionMessage(e))
-      env_f$done <- TRUE
-    })
-  deadline <- Sys.time() + deadline_s
-  while (!isTRUE(env_f$done) && Sys.time() < deadline) {
-    later::run_now(timeoutSecs = 0.05)
-  }
-  env_f$value %||% jrpc_error(marker$.id %||% NULL,
-                              jrpc_codes$internal_error,
-                              "stateless dispatch timed out")
-}
 
 http_method_not_allowed_handler <- function(state) {
   function(req) {

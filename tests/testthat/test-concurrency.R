@@ -223,3 +223,100 @@ test_that("a fast request returns long before an in-flight slow request", {
   # Slow request still completes successfully (~3s on a quiet host).
   expect_gt(slow_time, 2.5)
 })
+
+# Test D — a JSON-RPC batch of async calls runs concurrently -------------
+#
+# Exercises the http_post_batch() path: each entry's tool runs in its own
+# daemon, promise_all gathers them, and the array comes back in order.
+
+test_that("a batch of async tool calls runs in parallel and returns all results", {
+  srv <- spawn_concurrency_server(port = 42304L, daemons = 4L)
+  withr::defer({
+    srv$process$kill()
+    unlink(srv$runner_script)
+  })
+  if (is.null(srv$sid) || !nzchar(srv$sid)) skip("server did not start")
+
+  batch <- paste0(
+    "[",
+    paste(sprintf(
+      '{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":"slow","arguments":{"ms":400}}}',
+      1:3), collapse = ","),
+    "]")
+
+  t0 <- Sys.time()
+  state <- resolve_all(list(post_method(srv, batch, timeout = 15)),
+                       deadline_s = 15)
+  elapsed <- as.numeric(difftime(Sys.time(), t0, units = "secs"))
+  expect_equal(state$done, 1L)
+  expect_equal(length(state$errors), 0L,
+               info = paste(unlist(state$errors), collapse = " | "))
+
+  # Verify the array shape with a synchronous fetch too.
+  resp <- httr2::request(srv$url) |>
+    httr2::req_method("POST") |>
+    httr2::req_headers(Origin = "http://127.0.0.1",
+                       `Content-Type` = "application/json",
+                       `Mcp-Session-Id` = srv$sid,
+                       `MCP-Protocol-Version` = "2025-06-18") |>
+    httr2::req_body_raw(charToRaw(batch)) |>
+    httr2::req_timeout(15) |>
+    httr2::req_perform()
+  arr <- jsonlite::fromJSON(httr2::resp_body_string(resp), simplifyVector = FALSE)
+  expect_equal(length(arr), 3L)
+  # Three 400ms calls over four daemons = one ~0.4s round, not 1.2s.
+  expect_lt(elapsed, 1.5)
+})
+
+# Test E — stateless mode does not serialise concurrent clients ----------
+
+test_that("a fast stateless request returns while a slow one is in flight", {
+  curl_bin <- Sys.which("curl")
+  skip_if(!nzchar(curl_bin), "curl not on PATH")
+
+  port <- 42305L
+  runner_script <- tempfile(fileext = ".R")
+  writeLines(c(
+    "suppressPackageStartupMessages(library(mcpserver))",
+    "srv <- new_server('stateless-conc', version = '0.1.0')",
+    "add_capability(srv, new_tool('slow','slow',",
+    "  schema(list(ms = property_integer('ms', default = 3000L))),",
+    "  handler = function(args, ctx) { Sys.sleep((args$ms %||% 3000L)/1000); response_text('s') }))",
+    "add_capability(srv, new_tool('fast','fast', schema(list()),",
+    "  handler = function(args, ctx) response_text('f')))",
+    sprintf("serve_http(srv, port = %dL, allowed_origins = c('http://127.0.0.1'), stateless = TRUE)", port)
+  ), runner_script)
+  child_env <- Sys.getenv()
+  child_env["R_LIBS"] <- paste(.libPaths(), collapse = .Platform$path.sep)
+  p <- processx::process$new("Rscript", runner_script,
+                             stdout = "|", stderr = "|", env = child_env)
+  withr::defer({ p$kill(); unlink(runner_script) })
+  Sys.sleep(3)
+  url <- sprintf("http://127.0.0.1:%d/mcp", port)
+
+  # Stateless: no session id needed; each request is self-contained.
+  curl_post <- function(body) {
+    processx::process$new(curl_bin, c(
+      "-sS", "-o", "/dev/null", "-w", "%{http_code} %{time_total}",
+      "-X", "POST", url,
+      "-H", "Origin: http://127.0.0.1",
+      "-H", "Content-Type: application/json",
+      "-H", "Accept: application/json, text/event-stream",
+      "-d", body), stdout = "|", stderr = "|")
+  }
+  finish <- function(pr, timeout = 10) {
+    pr$wait(timeout = as.integer(timeout * 1000)); if (pr$is_alive()) pr$kill()
+    tryCatch(pr$read_all_output(), error = function(e) "")
+  }
+  slow_p <- curl_post('{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"slow","arguments":{"ms":3000}}}')
+  Sys.sleep(0.5)
+  fast_p <- curl_post('{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"fast","arguments":{}}}')
+  fast_out <- finish(fast_p, 5)
+  slow_out <- finish(slow_p, 10)
+  if (!nzchar(fast_out)) skip("stateless server did not respond")
+
+  fast_time <- as.numeric(strsplit(fast_out, " ")[[1L]][[2L]])
+  expect_equal(strsplit(fast_out, " ")[[1L]][[1L]], "200")
+  expect_true(is.finite(fast_time))
+  expect_lt(fast_time, 1.0)   # not blocked behind the 3s slow request
+})

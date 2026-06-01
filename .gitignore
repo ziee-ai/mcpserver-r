@@ -10,3 +10,7 @@ inst/parity/package-lock.json
 
 # local demo / scratch server (not part of the package)
 demo-server.R
+
+# Persisted OAuth AS signing key (per-server secret; never commit)
+.mcpserver-as-key.pem
+**/.mcpserver-as-key.pem
