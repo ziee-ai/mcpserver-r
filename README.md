@@ -256,6 +256,31 @@ Supports `client_secret_basic`, `client_secret_post`, and public
 **Demo-grade**: in-memory stores, auto-consent on, SHA-256+salt secret
 hashing. Use a real IdP (Auth0, Keycloak, Okta) for production.
 
+#### Surviving a restart
+
+The AS signs tokens with an RS256 key. By default that key is **persisted**
+to `.mcpserver-as-key.pem` in the working directory and reloaded on the next
+start, so tokens minted before a restart keep validating. Two things matter:
+
+* **Stable signing key.** Pass an explicit `key_path` (recommended for
+  production) or rely on the working-dir default. Each server should have its
+  own key — give servers launched from the same directory distinct `key_path`s
+  (or run them from distinct directories), and add the PEM to `.gitignore`.
+  If the key rotates (e.g. a fresh ephemeral key per start) every outstanding
+  token silently becomes invalid even though its store row still reads
+  `active`.
+* **Persistent token store.** Use `new_mcp_store("sqlite", path = ...)`; the
+  default `"memory"` store loses all token rows on restart.
+
+```r
+store  <- new_mcp_store("sqlite", path = "/var/lib/mcp/state.db")
+as_cfg <- oauth_server_config(
+  issuer   = "https://mcp.example.com",
+  audience = "https://mcp.example.com/mcp",
+  store    = store,
+  key_path = "/var/lib/mcp/as-signing-key.pem")  # stable across restarts
+```
+
 ---
 
 ## Testing strategy

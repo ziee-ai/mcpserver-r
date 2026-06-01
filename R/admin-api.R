@@ -16,6 +16,8 @@
 #   GET    /admin/users/{id}/tokens
 #   POST   /admin/tokens/mint
 #   POST   /admin/tokens/{jti}/revoke
+#   POST   /admin/tokens/{jti}/reactivate
+#   DELETE /admin/tokens/{jti}
 #
 # Responses are JSON; errors carry `{error, message}` payloads with the
 # semantics documented per-endpoint.
@@ -203,6 +205,23 @@ admin_route <- function(state, req, principal) {
   if (length(m) == 2L) {
     if (method != "POST") return(method_not_allowed(c("POST")))
     return(handle_tokens_revoke(store, m[[2L]]))
+  }
+
+  m <- regmatches(path,
+                  regexec("^/admin/tokens/([^/]+)/reactivate$",
+                          path))[[1L]]
+  if (length(m) == 2L) {
+    if (method != "POST") return(method_not_allowed(c("POST")))
+    return(handle_tokens_reactivate(store, m[[2L]]))
+  }
+
+  # Bare /admin/tokens/{jti}: keep LAST so it doesn't shadow the
+  # /mint, /revoke, /reactivate sub-paths above.
+  m <- regmatches(path,
+                  regexec("^/admin/tokens/([^/]+)$", path))[[1L]]
+  if (length(m) == 2L) {
+    if (method != "DELETE") return(method_not_allowed(c("DELETE")))
+    return(handle_tokens_delete(store, m[[2L]]))
   }
 
   admin_error(404L, "not_found",
@@ -433,6 +452,40 @@ handle_tokens_revoke <- function(store, jti) {
                        sprintf("no such token: %s", jti)))
   }
   store$tokens$revoke(jti)
+  admin_json(204L, NULL)
+}
+
+# Un-revoke a token in place: flip `revoked` back to FALSE so the
+# originally-issued JWT is accepted again (if unexpired). No new token
+# string is minted -- JWTs are never stored server-side.
+handle_tokens_reactivate <- function(store, jti) {
+  t <- store$tokens$get(jti)
+  if (is.null(t)) {
+    return(admin_error(404L, "not_found",
+                       sprintf("no such token: %s", jti)))
+  }
+  # Guard the mint uniqueness rule: refuse if another *active* token of
+  # this user already holds the name. (The memory driver would otherwise
+  # allow two active tokens with the same name; SQLite's UNIQUE makes this
+  # case impossible, so the check is a no-op there.)
+  active <- store$tokens$list_for_user(t$user_id, include_revoked = FALSE)
+  clash  <- Filter(function(x) identical(x$name, t$name) &&
+                     !identical(x$jti, jti), active)
+  if (length(clash) > 0L) {
+    return(admin_error(409L, "conflict",
+      sprintf("token name '%s' already in use for this user", t$name)))
+  }
+  store$tokens$reactivate(jti)
+  admin_json(200L, token_view(store$tokens$get(jti)))
+}
+
+# Hard-delete a token row (active or revoked), freeing its (user_id, name)
+# slot so the name can be minted again.
+handle_tokens_delete <- function(store, jti) {
+  if (!isTRUE(store$tokens$delete(jti))) {
+    return(admin_error(404L, "not_found",
+                       sprintf("no such token: %s", jti)))
+  }
   admin_json(204L, NULL)
 }
 

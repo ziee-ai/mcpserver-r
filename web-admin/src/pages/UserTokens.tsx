@@ -83,6 +83,47 @@ export default function UserTokens() {
     });
   };
 
+  const onReactivate = async (t: Token) => {
+    modal.confirm({
+      title: `Reactivate token "${t.name}"?`,
+      content:
+        "The token's original value becomes valid again on all future " +
+        "requests (until it expires). No new token is shown — the " +
+        "original string was only displayed once at creation.",
+      onOk: async () => {
+        try {
+          await adminApi.reactivateToken(t.jti);
+          message.success("Reactivated");
+          refresh();
+        } catch (e: any) {
+          message.error(
+            `Failed: ${e?.response?.data?.message ?? e?.message}`,
+          );
+        }
+      },
+    });
+  };
+
+  const onDelete = async (t: Token) => {
+    modal.confirm({
+      title: `Delete token "${t.name}"?`,
+      content:
+        "This permanently removes the token record. This cannot be undone, " +
+        "and frees the name to be used again.",
+      okType: "danger",
+      okText: "Delete",
+      onOk: async () => {
+        try {
+          await adminApi.deleteToken(t.jti);
+          message.success("Deleted");
+          refresh();
+        } catch (e: any) {
+          message.error(`Failed: ${e?.message}`);
+        }
+      },
+    });
+  };
+
   return (
     <>
       <Card
@@ -132,18 +173,45 @@ export default function UserTokens() {
               render: (v) => v ?? "—" },
             {
               title: "Status",
-              dataIndex: "revoked",
-              render: (v) =>
-                v ? <Tag color="red">revoked</Tag> : <Tag color="green">active</Tag>,
+              render: (_, t: Token) => {
+                if (t.revoked) return <Tag color="red">revoked</Tag>;
+                const expired =
+                  !!t.expires_at &&
+                  new Date(t.expires_at).getTime() <= Date.now();
+                return expired ? (
+                  <Tag color="orange" data-testid="status-expired">
+                    expired
+                  </Tag>
+                ) : (
+                  <Tag color="green">active</Tag>
+                );
+              },
             },
             {
               title: "Actions",
-              render: (_, t: Token) =>
-                t.revoked ? null : (
-                  <Button danger onClick={() => onRevoke(t)}>
-                    Revoke
+              render: (_, t: Token) => (
+                <Space>
+                  {t.revoked ? (
+                    <Button
+                      onClick={() => onReactivate(t)}
+                      data-testid="token-reactivate"
+                    >
+                      Reactivate
+                    </Button>
+                  ) : (
+                    <Button danger onClick={() => onRevoke(t)}>
+                      Revoke
+                    </Button>
+                  )}
+                  <Button
+                    danger
+                    onClick={() => onDelete(t)}
+                    data-testid="token-delete"
+                  >
+                    Delete
                   </Button>
-                ),
+                </Space>
+              ),
             },
           ]}
         />

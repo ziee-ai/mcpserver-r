@@ -84,6 +84,9 @@ export const adminApi = {
       )
       .then((r) => r.data),
   revokeToken: (jti: string) => api.post(`/admin/tokens/${jti}/revoke`),
+  reactivateToken: (jti: string) =>
+    api.post(`/admin/tokens/${jti}/reactivate`),
+  deleteToken: (jti: string) => api.delete(`/admin/tokens/${jti}`),
 };
 
 export default api;

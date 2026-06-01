@@ -359,6 +359,164 @@ test_that("GET /admin/users/{id}/tokens lists active by default", {
   expect_equal(length(all), 2L)
 })
 
+# ----- /admin/tokens/{jti}/reactivate + DELETE ---------------------------
+
+test_that("mint -> revoke -> reactivate restores the JWT", {
+  start_once()
+  cu <- http_call(paste0(srv$url, "/admin/users"), "POST", H(srv),
+                  body = list(username = sprintf("react-%d",
+                                                 as.integer(Sys.time()))))
+  uid <- jsbody(cu)$id
+  m <- jsbody(http_call(paste0(srv$url, "/admin/tokens/mint"),
+                        "POST", H(srv),
+                        body = list(user_id = uid, name = "ci",
+                                    scopes = list("mcp:read"),
+                                    ttl = 3600L)))
+
+  # `initialize` establishes its own session, so it's a self-contained
+  # probe: 200 when the bearer is accepted, 401 once revoked.
+  probe <- function() http_call(paste0(srv$url, "/mcp"), "POST",
+    c(Origin = "http://127.0.0.1",
+      `Content-Type` = "application/json",
+      Accept = "application/json, text/event-stream",
+      Authorization = paste("Bearer", m$token)),
+    body = list(jsonrpc = "2.0", id = 1, method = "initialize",
+                params = list(protocolVersion = "2025-06-18",
+                              capabilities = list())))
+
+  # works -> revoke -> 401 -> reactivate -> works again
+  expect_equal(httr2::resp_status(probe()), 200L)
+  rv <- http_call(sprintf("%s/admin/tokens/%s/revoke", srv$url, m$jti),
+                  "POST", H(srv))
+  expect_equal(httr2::resp_status(rv), 204L)
+  expect_equal(httr2::resp_status(probe()), 401L)
+
+  re <- http_call(sprintf("%s/admin/tokens/%s/reactivate", srv$url, m$jti),
+                  "POST", H(srv))
+  expect_equal(httr2::resp_status(re), 200L)
+  expect_false(jsbody(re)$revoked)
+  expect_equal(jsbody(re)$jti, m$jti)
+  expect_equal(httr2::resp_status(probe()), 200L)
+})
+
+test_that("reactivate is idempotent on an active token; 404 for unknown", {
+  start_once()
+  cu <- http_call(paste0(srv$url, "/admin/users"), "POST", H(srv),
+                  body = list(username = sprintf("react2-%d",
+                                                 as.integer(Sys.time()))))
+  uid <- jsbody(cu)$id
+  m <- jsbody(http_call(paste0(srv$url, "/admin/tokens/mint"),
+                        "POST", H(srv),
+                        body = list(user_id = uid, name = "ci",
+                                    scopes = list("mcp:read"),
+                                    ttl = 60L)))
+  # already active -> still 200, still active
+  r1 <- http_call(sprintf("%s/admin/tokens/%s/reactivate", srv$url, m$jti),
+                  "POST", H(srv))
+  expect_equal(httr2::resp_status(r1), 200L)
+  expect_false(jsbody(r1)$revoked)
+  # unknown jti -> 404
+  r2 <- http_call(paste0(srv$url, "/admin/tokens/jti_missing/reactivate"),
+                  "POST", H(srv))
+  expect_equal(httr2::resp_status(r2), 404L)
+})
+
+test_that("DELETE token (active or revoked) -> 204; unknown -> 404", {
+  start_once()
+  cu <- http_call(paste0(srv$url, "/admin/users"), "POST", H(srv),
+                  body = list(username = sprintf("del-%d",
+                                                 as.integer(Sys.time()))))
+  uid <- jsbody(cu)$id
+  # delete an ACTIVE token
+  ma <- jsbody(http_call(paste0(srv$url, "/admin/tokens/mint"),
+                         "POST", H(srv),
+                         body = list(user_id = uid, name = "active",
+                                     scopes = list("mcp:read"),
+                                     ttl = 60L)))
+  da <- http_call(sprintf("%s/admin/tokens/%s", srv$url, ma$jti),
+                  "DELETE", H(srv))
+  expect_equal(httr2::resp_status(da), 204L)
+  # delete a REVOKED token
+  mr <- jsbody(http_call(paste0(srv$url, "/admin/tokens/mint"),
+                         "POST", H(srv),
+                         body = list(user_id = uid, name = "revoked",
+                                     scopes = list("mcp:read"),
+                                     ttl = 60L)))
+  http_call(sprintf("%s/admin/tokens/%s/revoke", srv$url, mr$jti),
+            "POST", H(srv))
+  dr <- http_call(sprintf("%s/admin/tokens/%s", srv$url, mr$jti),
+                  "DELETE", H(srv))
+  expect_equal(httr2::resp_status(dr), 204L)
+  # both gone from the include_revoked listing
+  lr <- jsbody(http_call(
+    sprintf("%s/admin/users/%s/tokens?include_revoked=true", srv$url, uid),
+    "GET", H(srv)))
+  expect_equal(length(lr$tokens), 0L)
+  # delete unknown -> 404
+  d404 <- http_call(paste0(srv$url, "/admin/tokens/jti_missing"),
+                    "DELETE", H(srv))
+  expect_equal(httr2::resp_status(d404), 404L)
+})
+
+test_that("delete frees the name so it can be minted again (regression)", {
+  start_once()
+  cu <- http_call(paste0(srv$url, "/admin/users"), "POST", H(srv),
+                  body = list(username = sprintf("reuse-%d",
+                                                 as.integer(Sys.time()))))
+  uid <- jsbody(cu)$id
+  m1 <- jsbody(http_call(paste0(srv$url, "/admin/tokens/mint"),
+                         "POST", H(srv),
+                         body = list(user_id = uid, name = "key-a",
+                                     scopes = list("mcp:read"),
+                                     ttl = 60L)))
+  http_call(sprintf("%s/admin/tokens/%s/revoke", srv$url, m1$jti),
+            "POST", H(srv))
+  # While the revoked row exists, re-minting the same name still 409s.
+  rconflict <- http_call(paste0(srv$url, "/admin/tokens/mint"),
+                         "POST", H(srv),
+                         body = list(user_id = uid, name = "key-a",
+                                     scopes = list("mcp:read"),
+                                     ttl = 60L))
+  expect_equal(httr2::resp_status(rconflict), 409L)
+  # Delete it, then the same name mints cleanly.
+  http_call(sprintf("%s/admin/tokens/%s", srv$url, m1$jti),
+            "DELETE", H(srv))
+  rok <- http_call(paste0(srv$url, "/admin/tokens/mint"),
+                   "POST", H(srv),
+                   body = list(user_id = uid, name = "key-a",
+                               scopes = list("mcp:read"),
+                               ttl = 60L))
+  expect_equal(httr2::resp_status(rok), 200L)
+})
+
+test_that("reactivate + delete require admin (401 missing, 403 non-admin)", {
+  start_once()
+  # a token to target, and a non-admin user's JWT
+  cu <- http_call(paste0(srv$url, "/admin/users"), "POST", H(srv),
+                  body = list(username = sprintf("gate-%d",
+                                                 as.integer(Sys.time()))))
+  uid <- jsbody(cu)$id
+  m <- jsbody(http_call(paste0(srv$url, "/admin/tokens/mint"),
+                        "POST", H(srv),
+                        body = list(user_id = uid, name = "ci",
+                                    scopes = list("mcp:read"),
+                                    ttl = 600L)))
+  no_auth   <- c(Origin = "http://127.0.0.1")
+  user_auth <- c(Origin = "http://127.0.0.1",
+                 Authorization = paste("Bearer", m$token))
+  react_url <- sprintf("%s/admin/tokens/%s/reactivate", srv$url, m$jti)
+  del_url   <- sprintf("%s/admin/tokens/%s", srv$url, m$jti)
+
+  expect_equal(httr2::resp_status(
+    http_call(react_url, "POST", no_auth)), 401L)
+  expect_equal(httr2::resp_status(
+    http_call(del_url, "DELETE", no_auth)), 401L)
+  expect_equal(httr2::resp_status(
+    http_call(react_url, "POST", user_auth)), 403L)
+  expect_equal(httr2::resp_status(
+    http_call(del_url, "DELETE", user_auth)), 403L)
+})
+
 # ----- admin auth: admin-user JWT path ----------------------------------
 
 test_that("an is_admin user's JWT can call /admin/*", {

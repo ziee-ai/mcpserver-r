@@ -190,6 +190,27 @@ new_memory_store <- function() {
       assign(jti, rec, envir = tokens_env)
       TRUE
     },
+    reactivate = function(jti) {
+      if (!exists(jti, envir = tokens_env, inherits = FALSE)) return(FALSE)
+      rec <- get(jti, envir = tokens_env, inherits = FALSE)
+      rec$revoked <- FALSE
+      assign(jti, rec, envir = tokens_env)
+      TRUE
+    },
+    delete = function(jti) {
+      if (!exists(jti, envir = tokens_env, inherits = FALSE)) return(FALSE)
+      rec <- get(jti, envir = tokens_env, inherits = FALSE)
+      rm(list = jti, envir = tokens_env)
+      # drop from the (user_id -> jti vector) index
+      if (exists(rec$user_id, envir = state$tokens_by_user,
+                 inherits = FALSE)) {
+        jtis <- get(rec$user_id, envir = state$tokens_by_user,
+                    inherits = FALSE)
+        assign(rec$user_id, setdiff(jtis, jti),
+               envir = state$tokens_by_user)
+      }
+      TRUE
+    },
     touch_last_used = function(jti) {
       if (!exists(jti, envir = tokens_env, inherits = FALSE)) return(FALSE)
       rec <- get(jti, envir = tokens_env, inherits = FALSE)
@@ -387,6 +408,18 @@ new_sqlite_store <- function(path) {
     revoke = function(jti) {
       n <- DBI::dbExecute(con,
         "UPDATE mcp_tokens SET revoked = 1 WHERE jti = $jti",
+        params = list(jti = jti))
+      n > 0L
+    },
+    reactivate = function(jti) {
+      n <- DBI::dbExecute(con,
+        "UPDATE mcp_tokens SET revoked = 0 WHERE jti = $jti",
+        params = list(jti = jti))
+      n > 0L
+    },
+    delete = function(jti) {
+      n <- DBI::dbExecute(con,
+        "DELETE FROM mcp_tokens WHERE jti = $jti",
         params = list(jti = jti))
       n > 0L
     },

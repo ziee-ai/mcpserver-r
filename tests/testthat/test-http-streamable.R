@@ -100,9 +100,15 @@ test_that("POST with wrong Content-Type is rejected with 415", {
 })
 
 test_that("a notification only returns 202 Accepted (no body)", {
-  # Tested via test-conformance-external.R which exercises the
-  # notifications/initialized leg of the lifecycle handshake.
-  skip("covered by conformance-external; direct httr2 post hangs on initialized")
+  # Regression for the notifications/initialized hang: a bodyless 202 used
+  # to omit Content-Length, so httr2's req_timeout(5) errored waiting for a
+  # body that never came (this test was previously skipped for that reason).
+  srv <- spawn_streamable(45103L)
+  withr::defer({ srv$p$kill(); unlink(srv$runner_script) })
+  if (is.null(srv$sid)) skip("server did not start")
+  resp <- post(srv, '{"jsonrpc":"2.0","method":"notifications/initialized"}')
+  expect_equal(httr2::resp_status(resp), 202L)
+  expect_false(httr2::resp_has_body(resp))
 })
 
 test_that("POST with malformed JSON returns -32700", {
