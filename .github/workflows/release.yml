@@ -1,0 +1,68 @@
+name: Build, check + publish mcpserver to drat
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout mcpserver-r
+        uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'
+          use-public-rspm: true
+
+      - name: Install dependencies (+ rcmdcheck)
+        uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: any::rcmdcheck
+
+      - name: Build source tarball
+        run: R CMD build . --no-manual --no-build-vignettes
+        shell: bash
+
+      - name: Check the built package (gate — fails the run on error; nothing published)
+        shell: Rscript {0}
+        run: |
+          tb <- list.files(".", pattern = "^mcpserver_.*\\.tar\\.gz$", full.names = TRUE)
+          stopifnot(length(tb) == 1)
+          rcmdcheck::rcmdcheck(tb, args = c("--no-manual", "--no-build-vignettes"),
+                               error_on = "error")
+
+      - name: Checkout drat repo (gh-pages)
+        uses: actions/checkout@v4
+        with:
+          repository: ziee-ai/drat
+          ref: gh-pages
+          token: ${{ secrets.DRAT_PAT }}
+          path: drat
+
+      - name: Install drat
+        run: install.packages("drat")
+        shell: Rscript {0}
+
+      - name: Insert package into drat
+        shell: Rscript {0}
+        run: |
+          tb <- list.files(".", pattern = "^mcpserver_.*\\.tar\\.gz$", full.names = TRUE)
+          stopifnot(length(tb) == 1)
+          cat("inserting:", tb, "\n")
+          drat::insertPackage(file = tb, repodir = "drat", commit = FALSE, action = "none")
+
+      - name: Commit & push to gh-pages
+        working-directory: drat
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+          else
+            git commit -m "Publish mcpserver ${{ github.ref_name }}"
+            git push origin gh-pages
+          fi

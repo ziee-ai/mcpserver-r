@@ -11,8 +11,13 @@ semantics as the reference TypeScript / Python / Rust / Kotlin / Java
 SDKs.
 
 ```r
+# From the ziee-ai drat archive (recommended)
+install.packages("mcpserver",
+                 repos = c("https://ziee-ai.github.io/drat", getOption("repos")))
+
+# Or the development version from GitHub:
 # install.packages("remotes")
-remotes::install_github("tinnlab/mcpserver-r")
+remotes::install_github("ziee-ai/mcpserver-r")
 ```
 
 [mcp]: https://modelcontextprotocol.io

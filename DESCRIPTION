@@ -13,8 +13,8 @@ Description: Build Model Context Protocol (MCP) servers in R that expose
     progress, logging, subscriptions, tasks) needed to reach feature parity
     with reference MCP servers.
 License: MIT + file LICENSE
-URL: https://github.com/tinnlab/mcpserver-r
-BugReports: https://github.com/tinnlab/mcpserver-r/issues
+URL: https://github.com/ziee-ai/mcpserver-r
+BugReports: https://github.com/ziee-ai/mcpserver-r/issues
 Encoding: UTF-8
 Depends:
     R (>= 4.3)

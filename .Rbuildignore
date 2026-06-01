@@ -14,3 +14,4 @@
 ^inst/parity/package-lock\.json$
 ^web-admin$
 ^\.claude$
+^mcpserver_.*\.tar\.gz$
