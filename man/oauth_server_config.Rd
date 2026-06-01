@@ -8,6 +8,7 @@ oauth_server_config(
   issuer,
   audience,
   signing_key = NULL,
+  key_path = NULL,
   kid = "as-key-1",
   ttl_access = 3600L,
   ttl_refresh = 86400L,
@@ -29,8 +30,23 @@ metadata document base URL.}
 \item{audience}{The resource indicator (the MCP server's public
 URL) put into the \code{aud} claim.}
 
-\item{signing_key}{An \code{openssl::rsa_keygen()} result. Auto-
-generated (2048-bit) if \code{NULL}.}
+\item{signing_key}{An \code{openssl::rsa_keygen()} result. When \code{NULL}
+(default) the key is loaded from / persisted to \code{key_path} so it is
+stable across restarts. An explicit value takes precedence over
+\code{key_path}.}
+
+\item{key_path}{Path to a PEM file holding the RS256 signing key. When
+\code{signing_key} is \code{NULL}, the key is read from this file if it exists,
+otherwise a fresh 2048-bit key is generated and written there (mode
+\code{0600}). Defaults to \code{.mcpserver-as-key.pem} in the current working
+directory, so each server launched from its own folder keeps its own
+key. \strong{Persisting the key is required for previously-minted tokens to
+keep validating after a restart} — without it every restart rotates
+the key and silently invalidates all outstanding tokens. Two servers
+started from the \emph{same} working directory would share this file; give
+each an explicit \code{key_path} (or distinct working dirs) to avoid that.
+Add the PEM to \code{.gitignore}. Note the token store must also be
+persistent (\code{new_mcp_store("sqlite", ...)}) for token rows to survive.}
 
 \item{kid}{Key id put into the JWK and JWT header.}
 

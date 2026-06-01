@@ -116,4 +116,10 @@ enforced on all non-\code{initialize} requests.
 
 \code{Last-Event-ID} on \code{GET} triggers replay of events appended after that
 id from a per-session ring buffer capped by \code{max_event_log}.
+
+Requests are served concurrently: tool/resource/prompt handlers run in
+\code{mirai} daemons and the \code{POST} reply is streamed back when the handler
+resolves, so a slow call from one client does not block other clients.
+(Tools that themselves call back to the client — sampling, elicitation,
+roots — still run on the transport thread.)
 }

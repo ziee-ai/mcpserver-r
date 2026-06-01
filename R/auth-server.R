@@ -30,8 +30,22 @@
 #'   metadata document base URL.
 #' @param audience The resource indicator (the MCP server's public
 #'   URL) put into the `aud` claim.
-#' @param signing_key An `openssl::rsa_keygen()` result. Auto-
-#'   generated (2048-bit) if `NULL`.
+#' @param signing_key An `openssl::rsa_keygen()` result. When `NULL`
+#'   (default) the key is loaded from / persisted to `key_path` so it is
+#'   stable across restarts. An explicit value takes precedence over
+#'   `key_path`.
+#' @param key_path Path to a PEM file holding the RS256 signing key. When
+#'   `signing_key` is `NULL`, the key is read from this file if it exists,
+#'   otherwise a fresh 2048-bit key is generated and written there (mode
+#'   `0600`). Defaults to `.mcpserver-as-key.pem` in the current working
+#'   directory, so each server launched from its own folder keeps its own
+#'   key. **Persisting the key is required for previously-minted tokens to
+#'   keep validating after a restart** — without it every restart rotates
+#'   the key and silently invalidates all outstanding tokens. Two servers
+#'   started from the *same* working directory would share this file; give
+#'   each an explicit `key_path` (or distinct working dirs) to avoid that.
+#'   Add the PEM to `.gitignore`. Note the token store must also be
+#'   persistent (`new_mcp_store("sqlite", ...)`) for token rows to survive.
 #' @param kid Key id put into the JWK and JWT header.
 #' @param ttl_access Access-token lifetime in seconds.
 #' @param ttl_refresh Refresh-token lifetime in seconds.
@@ -60,6 +74,7 @@
 oauth_server_config <- function(issuer,
                                 audience,
                                 signing_key   = NULL,
+                                key_path      = NULL,
                                 kid           = "as-key-1",
                                 ttl_access    = 3600L,
                                 ttl_refresh   = 86400L,
@@ -76,7 +91,7 @@ oauth_server_config <- function(issuer,
   issuer <- sub("/+$", "", as.character(issuer))
   validate_issuer_url(issuer)
   if (is.null(signing_key)) {
-    signing_key <- openssl::rsa_keygen(2048L)
+    signing_key <- load_or_create_signing_key(key_path)
   }
   if (!is.null(store) && !inherits(store, "mcp_store")) {
     stop("store must be a new_mcp_store() result", call. = FALSE)
@@ -100,6 +115,25 @@ oauth_server_config <- function(issuer,
   )
   class(cfg) <- "mcp_oauth_server_config"
   cfg
+}
+
+# Resolve a stable RS256 signing key. Load the PEM at `key_path`,
+# generating + writing it (mode 0600) on first use so tokens minted before
+# a restart still verify afterwards. A NULL/empty `key_path` defaults to a
+# dotfile in the current working directory, giving each server launched
+# from its own folder a distinct key.
+load_or_create_signing_key <- function(key_path = NULL) {
+  if (is.null(key_path) || !nzchar(key_path)) {
+    key_path <- file.path(getwd(), ".mcpserver-as-key.pem")
+  }
+  if (file.exists(key_path)) {
+    return(openssl::read_key(key_path))
+  }
+  key <- openssl::rsa_keygen(2048L)
+  dir.create(dirname(key_path), recursive = TRUE, showWarnings = FALSE)
+  openssl::write_pem(key, path = key_path)
+  Sys.chmod(key_path, mode = "0600")
+  key
 }
 
 #' Mint a user-bound access token
