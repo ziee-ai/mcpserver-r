@@ -299,6 +299,19 @@ Three independent gates, all on every change:
 | **Conformance** (`2025-06-18`: 26/26, `2025-11-25`: 39/39) | The official `@modelcontextprotocol/conformance` CLI's scenario battery | `inst/conformance/server.R` + `test-conformance-external.R` |
 | **R CMD check `--as-cran`** | CRAN-clean checks | `R CMD check --as-cran` |
 
+[`R-CMD-check`](.github/workflows/R-CMD-check.yml) runs that suite across every
+platform we target:
+
+| OS | Arch | R versions |
+|---|---|---|
+| Linux (Ubuntu) | x86_64 | release, devel, oldrel-1 |
+| Linux (Ubuntu) | arm64 | release |
+| macOS (Apple Silicon) | arm64 | release |
+| Windows | x86_64 | release |
+
+`mcpserver` is pure R, so the source package installs on all of them with no
+compiler toolchain.
+
 Run locally:
 
 ```bash
