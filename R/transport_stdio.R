@@ -62,12 +62,18 @@ serve_io <- function(mcp, log_path = NULL, daemons = 4L) {
     write_fn(out)
   }
 
-  # Use until(cv, msec) instead of wait_() so the loop yields to the
-  # `later` event loop every 50ms — that's what gives mirai-resolved
-  # promises a chance to fire while no new stdin data is arriving.
+  # The blocking wait must happen inside `later::run_now()` (a positive
+  # timeout), not in `until()`. A mirai daemon result is posted onto
+  # `later`'s queue from a nanonext background thread; on Windows that
+  # cross-thread post is only surfaced/drained when `run_now` is performing
+  # its blocking wait (the same reason the HTTP loop's `run_now(Inf)` works
+  # there). A zero-timeout `run_now(0)` paired with a 50ms block in
+  # `until(cv, 50L)` — which watches only the stdin cv — never delivers the
+  # completion on Windows, so async tools/call results hang. So: poll stdin
+  # non-blockingly with `until(cv, 0L)`, and let `run_now(0.05)` be the sole
+  # blocking wait (mirrors `tasks.R`/`roots.R`'s run_now(0.05) and HTTP).
   repeat {
-    signalled <- nanonext::until(cv, 50L)
-    if (isTRUE(signalled)) {
+    if (isTRUE(nanonext::until(cv, 0L))) {
       nanonext::cv_reset(cv)
       line <- aio$data
       aio <- nanonext::recv_aio(sock, mode = "string", cv = cv)
@@ -83,8 +89,9 @@ serve_io <- function(mcp, log_path = NULL, daemons = 4L) {
         }
       }
     }
-    # Drain pending promise callbacks regardless of whether stdin had data.
-    later::run_now(timeoutSecs = 0)
+    # Block here so mirai-resolved promise callbacks are delivered and
+    # drained — this is what writes async tools/call results to stdout.
+    later::run_now(timeoutSecs = 0.05)
   }
   invisible(NULL)
 }

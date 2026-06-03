@@ -1,6 +1,8 @@
 skip_if_not_installed("processx")
 skip_on_cran()
-skip_if(nzchar(Sys.getenv("_R_CHECK_PACKAGE_NAME_")))
+# NB: this test deliberately runs under R CMD check (no _R_CHECK_PACKAGE_NAME_
+# skip). It exercises the stdio daemon-backed tools/call path, which hung on
+# Windows; keeping it under check is the regression guard.
 
 test_that("stdio transport replies to initialize and tools/list", {
   runner <- system.file("everything", "run-stdio.R",
@@ -84,7 +86,7 @@ test_that("stdio transport replies to initialize and tools/list", {
   send_msg(p, list(jsonrpc = "2.0", id = 3, method = "tools/call",
                    params = list(name = "echo",
                                  arguments = list(message = "stdio works"))))
-  resp_line <- read_line(p, timeout_ms = 30000)
+  resp_line <- read_line(p, timeout_ms = 60000)
   expect_false(is.na(resp_line),
                info = paste("stderr:",
                             paste(p$read_error_lines(), collapse = " | ")))
