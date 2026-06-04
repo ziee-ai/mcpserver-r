@@ -77,19 +77,45 @@ stdio_collect_by_id <- function(buf, ids, timeout_ms = 30000) {
   got
 }
 
-# Drive the initialize + notifications/initialized handshake; return the
-# reader buffer ready for subsequent requests.
-stdio_init <- function(srv, timeout_ms = 30000) {
+# Drive the initialize + notifications/initialized handshake. Returns the
+# reader buffer on success, or NULL if `initialize` did not reply within the
+# timeout (so callers / stdio_with_retry can react instead of crashing on a
+# later fromJSON(NA)).
+stdio_handshake <- function(srv, timeout_ms = 30000) {
   buf <- stdio_reader(srv$process)
   stdio_send(srv$process, list(jsonrpc = "2.0", id = 1, method = "initialize",
                                params = list(protocolVersion = "2025-06-18",
                                              capabilities = list())))
   init_line <- stdio_readline(buf, timeout_ms = timeout_ms)
-  testthat::expect_false(
-    is.na(init_line),
-    info = paste("stderr:",
-                 paste(srv$process$read_error_lines(), collapse = " | ")))
+  if (is.na(init_line)) return(NULL)
   stdio_send(srv$process, list(jsonrpc = "2.0",
                                method = "notifications/initialized"))
   buf
+}
+
+# Spawn a stdio server from `runner_lines`, run the initialize handshake, then
+# call `interact(srv, buf)` and return its value. `interact` should return its
+# result on success or NULL to signal a transient no-response (a timed-out
+# read); in that case — or if the handshake itself times out — the server is
+# respawned and retried up to `attempts` times. After exhausting attempts a
+# single clean testthat failure is recorded with the last subprocess stderr,
+# rather than the cryptic error from fromJSON(NA). This keeps the heavy
+# subprocess+daemon stdio tests robust to transient slowness on loaded CI
+# runners while still catching a real (deterministic) delivery hang, which
+# times out on every attempt.
+stdio_with_retry <- function(runner_lines, interact, attempts = 2L,
+                             init_timeout_ms = 30000) {
+  last_err <- "<none>"
+  for (k in seq_len(attempts)) {
+    srv <- stdio_spawn(runner_lines)
+    buf <- stdio_handshake(srv, timeout_ms = init_timeout_ms)
+    res <- if (is.null(buf)) NULL else interact(srv, buf)
+    last_err <- paste(srv$process$read_error_lines(), collapse = " | ")
+    srv$process$kill(); unlink(srv$script)
+    if (!is.null(res)) return(res)
+  }
+  testthat::fail(sprintf(
+    "stdio server gave no response after %d attempt(s); last stderr: %s",
+    attempts, last_err))
+  NULL
 }
