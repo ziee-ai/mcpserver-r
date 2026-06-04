@@ -1,6 +1,6 @@
 Package: mcpserver
 Title: Model Context Protocol Server SDK
-Version: 0.1.0
+Version: 0.1.0.9000
 Authors@R: person("Phi", "Bya", email = "hungbya@gmail.com",
                   role = c("aut", "cre"))
 Description: Build Model Context Protocol (MCP) servers in R that expose

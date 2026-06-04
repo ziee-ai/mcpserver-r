@@ -15,3 +15,6 @@
 .mcp_state <- new.env(parent = emptyenv())
 .mcp_state$daemons_started <- FALSE
 .mcp_state$daemon_count    <- 0L
+# TRUE when we adopted a pool the caller created via mirai::daemons()
+# directly (rather than creating our own) — we must not reset or stop it.
+.mcp_state$daemons_external <- FALSE
