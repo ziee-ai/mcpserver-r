@@ -2,28 +2,48 @@
 
 # Internal: ensure a mirai daemon pool of at least `n` workers is running.
 # Idempotent — calling again with the same or smaller n is a no-op.
+#
+# If the caller already created a pool directly via mirai::daemons() (e.g. a
+# downstream that loads its own packages into the daemons before calling
+# serve_io/serve_http), ADOPT that pool instead of re-initialising it.
+# mirai::daemons(n) is NOT idempotent: calling it on a live pool tears the
+# pool down and rebuilds it on fresh sockets (the dispatcher URL changes).
+# That reset breaks the mirai->later completion wiring on Windows, so async
+# tool results are never delivered and stdio tools/call hangs. Adopting the
+# existing pool avoids the reset and keeps delivery working.
 ensure_daemons <- function(n = 4L) {
   n <- as.integer(n)
   if (n <= 0L) return(invisible())
+  # Once we own (or have adopted) a pool, never re-init: an adopted pool must
+  # never be reset, and our own pool only grows on an explicit larger request.
   if (isTRUE(.mcp_state$daemons_started) &&
-      .mcp_state$daemon_count >= n) return(invisible())
-  mirai::daemons(n)
-  # Make exported mcpserver helpers (response_text, etc.) available in
-  # every daemon so user handlers can reference them.
+      (isTRUE(.mcp_state$daemons_external) ||
+       .mcp_state$daemon_count >= n)) return(invisible())
+  # A pool we did not create is already running ⇒ adopt it (no daemons(n)).
+  external <- !isTRUE(.mcp_state$daemons_started) &&
+    isTRUE(tryCatch(mirai::daemons_set(), error = function(e) FALSE))
+  if (!external) mirai::daemons(n)
+  # Make exported mcpserver helpers (response_text, etc.) available in every
+  # daemon so user handlers can reference them. everywhere() runs a task on
+  # the live pool; it does not reset sockets, so it is safe on an adopted pool.
   safely(mirai::everywhere(suppressPackageStartupMessages(
     library(mcpserver))), log = TRUE)
   .mcp_state$daemons_started <- TRUE
+  .mcp_state$daemons_external <- external
   .mcp_state$daemon_count <- n
   invisible()
 }
 
-# Stop all daemons. Called from .onUnload and from teardown helpers.
+# Stop the daemon pool we created. Called from .onUnload and teardown helpers.
+# A pool the caller created (adopted) is left untouched — its owner stops it.
 stop_daemons <- function() {
-  if (isTRUE(.mcp_state$daemons_started)) {
+  if (isTRUE(.mcp_state$daemons_started) &&
+      !isTRUE(.mcp_state$daemons_external)) {
     safely(mirai::daemons(0L), log = FALSE)
-    .mcp_state$daemons_started <- FALSE
-    .mcp_state$daemon_count <- 0L
   }
+  .mcp_state$daemons_started <- FALSE
+  .mcp_state$daemons_external <- FALSE
+  .mcp_state$daemon_count <- 0L
   invisible()
 }
 
