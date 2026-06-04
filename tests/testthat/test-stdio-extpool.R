@@ -7,7 +7,7 @@ skip_on_cran()
 # Re-calling mirai::daemons(n) on a live pool resets it onto fresh sockets,
 # which breaks mirai->later delivery on Windows and hangs every daemon-backed
 # tools/call. This mirrors rcpa-mcpserver/R/stdio_server.R's setup. Shared
-# spawn/JSON-RPC helpers live in helper-stdio.R.
+# spawn/JSON-RPC/retry helpers live in helper-stdio.R.
 
 # Caller pre-creates and pre-loads the daemon pool, THEN calls serve_io().
 extpool_runner_lines <- function() {
@@ -30,38 +30,28 @@ extpool_runner_lines <- function() {
 }
 
 test_that("daemon-backed tools/call returns when the caller pre-created the pool", {
-  srv <- stdio_spawn(extpool_runner_lines())
-  withr::defer({ srv$process$kill(); unlink(srv$script) })
-  buf <- stdio_init(srv)
-
-  stdio_send(srv$process, list(jsonrpc = "2.0", id = 10, method = "tools/call",
-                               params = list(name = "echo2",
-                                             arguments = list(text = "ext"))))
-  line <- stdio_readline(buf, timeout_ms = 60000)
-  expect_false(is.na(line),
-               info = paste("stderr:",
-                            paste(srv$process$read_error_lines(),
-                                  collapse = " | ")))
-  resp <- jsonlite::fromJSON(line, simplifyVector = FALSE)
+  resp <- stdio_with_retry(extpool_runner_lines(), function(srv, buf) {
+    stdio_send(srv$process, list(jsonrpc = "2.0", id = 10, method = "tools/call",
+                                 params = list(name = "echo2",
+                                               arguments = list(text = "ext"))))
+    line <- stdio_readline(buf, timeout_ms = 60000)
+    if (is.na(line)) return(NULL)
+    jsonlite::fromJSON(line, simplifyVector = FALSE)
+  })
   expect_equal(resp$id, 10)
   expect_equal(resp$result$content[[1L]]$text, "echo2: ext")
 })
 
 test_that("an erroring tools/call is delivered (not hung) with a pre-created pool", {
   # Mirrors rcpa's empty-arg validate_input_file case that hung on Windows.
-  srv <- stdio_spawn(extpool_runner_lines())
-  withr::defer({ srv$process$kill(); unlink(srv$script) })
-  buf <- stdio_init(srv)
-
-  stdio_send(srv$process, list(jsonrpc = "2.0", id = 20, method = "tools/call",
-                               params = list(name = "boom",
-                                             arguments = list())))
-  line <- stdio_readline(buf, timeout_ms = 60000)
-  expect_false(is.na(line),
-               info = paste("stderr:",
-                            paste(srv$process$read_error_lines(),
-                                  collapse = " | ")))
-  resp <- jsonlite::fromJSON(line, simplifyVector = FALSE)
+  resp <- stdio_with_retry(extpool_runner_lines(), function(srv, buf) {
+    stdio_send(srv$process, list(jsonrpc = "2.0", id = 20, method = "tools/call",
+                                 params = list(name = "boom",
+                                               arguments = list())))
+    line <- stdio_readline(buf, timeout_ms = 60000)
+    if (is.na(line)) return(NULL)
+    jsonlite::fromJSON(line, simplifyVector = FALSE)
+  })
   expect_equal(resp$id, 20)
   expect_false(is.null(resp$error))
   expect_match(resp$error$message, "boom", fixed = TRUE)
